@@ -9,11 +9,13 @@ class PhysicalServer < ApplicationRecord
   include ProviderObjectMixin
   include ComplianceMixin
   include EmsRefreshMixin
+  include CustomActionsMixin
 
-  include_concern 'Operations'
+  include Operations
 
   VENDOR_TYPES = {
     # DB        Displayed
+    "cisco"   => "Cisco",
     "lenovo"  => "Lenovo",
     "unknown" => "Unknown",
     nil       => "Unknown",
@@ -36,11 +38,14 @@ class PhysicalServer < ApplicationRecord
 
   virtual_column :v_availability, :type => :string, :uses => :host
   virtual_column :v_host_os, :type => :string, :uses => :host
-  virtual_delegate :emstype, :to => "ext_management_system", :allow_nil => true
+  virtual_attribute :emstype, :string, :through => :ext_management_system, :source => :emstype
 
   delegate :queue_name_for_ems_operations, :to => :ext_management_system, :allow_nil => true
 
   has_many :physical_switches, :through => :computer_system, :source => :connected_physical_switches
+
+  has_one :assigned_server_profile, :foreign_key => :assigned_server_id, :dependent => :destroy, :inverse_of => :assigned_server, :class_name => "::PhysicalServerProfile"
+  has_one :associated_server_profile, :foreign_key => :associated_server_id, :dependent => :destroy, :inverse_of => :associated_server, :class_name => "::PhysicalServerProfile"
 
   def name_with_details
     details % {
@@ -62,16 +67,6 @@ class PhysicalServer < ApplicationRecord
 
   def is_refreshable_now_error_message
     refreshable_status[:message]
-  end
-
-  def is_available?(_address)
-    # TODO: (walteraa) remove bypass
-    true
-  end
-
-  def smart?
-    # TODO: (walteraa) remove bypass
-    true
   end
 
   def my_zone

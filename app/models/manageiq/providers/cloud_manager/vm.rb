@@ -1,4 +1,4 @@
-class ManageIQ::Providers::CloudManager::Vm < ::Vm
+class ManageIQ::Providers::CloudManager::Vm < Vm
   belongs_to :availability_zone
   belongs_to :flavor
   belongs_to :orchestration_stack
@@ -41,10 +41,6 @@ class ManageIQ::Providers::CloudManager::Vm < ::Vm
   virtual_column :load_balancer_health_check_states_with_reason,
                  :type => :string_set,
                  :uses => {:load_balancer_pool_members => :load_balancer_health_check_states_with_reason}
-
-  supports_not :add_security_group
-  supports_not :associate_floating_ip
-  supports_not :disassociate_floating_ip
 
   def load_balancer_health_check_state
     return @health_check_state if @health_check_state
@@ -110,11 +106,10 @@ class ManageIQ::Providers::CloudManager::Vm < ::Vm
     true
   end
 
-  def resize(new_flavor_id)
-    raise ArgumentError, _("new_flavor_id cannot be nil") if new_flavor_id.nil?
-    new_flavor = Flavor.find(new_flavor_id)
-    raise ArgumentError, _("flavor cannot be found") if new_flavor.nil?
-    raw_resize(new_flavor)
+  def resize(options)
+    raise ArgumentError, _("resize value options cannot be nil") if options.nil?
+
+    raw_resize(options)
   end
 
   def resize_confirm
@@ -306,6 +301,15 @@ class ManageIQ::Providers::CloudManager::Vm < ::Vm
     }
 
     MiqTask.generic_action_with_callback(task_opts, queue_opts)
+  end
+
+  def resize_queue(userid, options = {})
+    options[:src_ids] = [id]
+    user = User.find_by(:userid => userid)
+    if options["resizeFormId"] && options["resizeFormId"] != 'new'
+      @request_id = options["resizeFormId"]
+    end
+    VmCloudReconfigureRequest.make_request(@request_id, options, user)
   end
 
   def self.live_migrate(vm_id, options)

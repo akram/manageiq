@@ -1,7 +1,6 @@
 RSpec.describe "Server Monitor" do
   context "After Setup," do
     before do
-      MiqRegion.seed
       ServerRole.seed
 
       # Do this manually, to avoid caching at the class level
@@ -36,6 +35,7 @@ RSpec.describe "Server Monitor" do
         rolename = "ems_operations"
         @miq_server.assigned_server_roles.each do |asr|
           next unless asr.server_role.name == rolename
+
           asr.activate_in_zone
         end
         @miq_server.reload
@@ -49,6 +49,7 @@ RSpec.describe "Server Monitor" do
         rolename = "event"
         @miq_server.assigned_server_roles.each do |asr|
           next unless asr.server_role.name == rolename
+
           asr.activate_in_zone
         end
         @miq_server.reload
@@ -62,6 +63,7 @@ RSpec.describe "Server Monitor" do
         rolename = "reporting"
         @miq_server.assigned_server_roles.each do |asr|
           next unless asr.server_role.name == rolename
+
           asr.activate_in_region
         end
         @miq_server.reload
@@ -75,6 +77,7 @@ RSpec.describe "Server Monitor" do
         rolename = "scheduler"
         @miq_server.assigned_server_roles.each do |asr|
           next unless asr.server_role.name == rolename
+
           asr.activate_in_region
         end
         @miq_server.reload
@@ -101,6 +104,7 @@ RSpec.describe "Server Monitor" do
           rolename = "ems_operations"
           @miq_server.assigned_server_roles.each do |asr|
             next unless asr.server_role.name == rolename
+
             asr.deactivate_in_zone
           end
           @miq_server.reload
@@ -114,6 +118,7 @@ RSpec.describe "Server Monitor" do
           rolename = "event"
           @miq_server.assigned_server_roles.each do |asr|
             next unless asr.server_role.name == rolename
+
             asr.deactivate_in_zone
           end
           @miq_server.reload
@@ -231,6 +236,7 @@ RSpec.describe "Server Monitor" do
         [@miq_server1, @miq_server2].each do |svr|
           svr.assigned_server_roles.each do |asr|
             next unless asr.server_role.name == rolename
+
             asr.activate_in_zone
           end
         end

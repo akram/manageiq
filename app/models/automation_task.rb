@@ -1,6 +1,13 @@
 class AutomationTask < MiqRequestTask
-  alias_attribute :automation_request, :miq_request
   AUTOMATE_DRIVES = false
+
+  def automation_request
+    miq_request
+  end
+
+  def automation_request=(object)
+    self.miq_request = object
+  end
 
   def self.get_description(_request_obj)
     "Automation Task"
@@ -8,6 +15,10 @@ class AutomationTask < MiqRequestTask
 
   def self.base_model
     AutomationTask
+  end
+
+  def statemachine_task_status
+    state == "finished" ? status.to_s.downcase : "retry"
   end
 
   def do_request
@@ -22,6 +33,7 @@ class AutomationTask < MiqRequestTask
     args[:miq_group_id]     = options[:miq_group_id] || User.find(options[:user_id]).current_group.id
     args[:tenant_id]        = options[:tenant_id] || User.find(options[:user_id]).current_tenant.id
     args[:automate_message] = options[:message]
+    args[:attrs][:dialog_param_parent_request_id] = miq_request_id unless miq_request_id.nil?
 
     MiqAeEngine.deliver(args)
   end

@@ -16,10 +16,14 @@ class Host < ApplicationRecord
   VENDOR_TYPES = {
     # DB            Displayed
     "microsoft"       => "Microsoft",
-    "redhat"          => "RedHat",
+    "redhat"          => "Red Hat",
+    "ovirt"           => "oVirt",
     "kubevirt"        => "KubeVirt",
     "vmware"          => "VMware",
     "openstack_infra" => "OpenStack Infrastructure",
+    "openshift_infra" => "OpenShift Virtualization",
+    "ibm_power_hmc"   => "IBM Power HMC",
+    "proxmox"         => "Proxmox VE",
     "unknown"         => "Unknown",
     nil               => "Unknown",
   }.freeze
@@ -93,9 +97,9 @@ class Host < ApplicationRecord
   # Physical server reference
   belongs_to :physical_server, :inverse_of => :host
 
-  serialize :settings, Hash
+  serialize :settings, :type => Hash
 
-  deprecate_attribute :address,  :hostname
+  deprecate_attribute :address,  :hostname, :type => :string
   alias_attribute     :state,    :power_state
   alias_attribute     :to_s,     :name
 
@@ -103,20 +107,24 @@ class Host < ApplicationRecord
   include EventMixin
 
   include CustomAttributeMixin
-  has_many :ems_custom_attributes, -> { where(:source => 'VC') }, :as => :resource, :dependent => :destroy, :class_name => "CustomAttribute"
+  has_many :ems_custom_attributes, -> { where(:source => 'VC') }, # rubocop:disable Rails/HasManyOrHasOneDependent
+           :class_name => "CustomAttribute",
+           :as         => :resource,
+           :inverse_of => :resource
   has_many :filesystems_custom_attributes, :through => :filesystems, :source => 'custom_attributes'
 
   acts_as_miq_taggable
 
   virtual_column :os_image_name,                :type => :string,      :uses => [:operating_system, :hardware]
   virtual_column :platform,                     :type => :string,      :uses => [:operating_system, :hardware]
-  virtual_delegate :v_owning_cluster, :to => "ems_cluster.name", :allow_nil => true, :default => "", :type => :string
+  virtual_attribute :v_owning_cluster, :string, :through => :ems_cluster, :source => :name, :default => ""
   virtual_column :v_owning_datacenter,          :type => :string,      :uses => :all_relationships
   virtual_column :v_owning_folder,              :type => :string,      :uses => :all_relationships
-  virtual_delegate :cpu_total_cores, :cpu_cores_per_socket, :to => :hardware, :allow_nil => true, :default => 0, :type => :integer
-  virtual_delegate :num_cpu,     :to => "hardware.cpu_sockets",        :allow_nil => true, :default => 0, :type => :integer
-  virtual_delegate :total_vcpus, :to => "hardware.cpu_total_cores",    :allow_nil => true, :default => 0, :type => :integer
-  virtual_delegate :ram_size,    :to => "hardware.memory_mb",          :allow_nil => true, :default => 0, :type => :integer
+  virtual_attribute :cpu_total_cores, :integer, :through => :hardware, :source => :cpu_total_cores, :default => 0
+  virtual_attribute :cpu_cores_per_socket, :integer, :through => :hardware, :source => :cpu_cores_per_socket, :default => 0
+  virtual_attribute :num_cpu, :integer, :through => :hardware, :source => :cpu_sockets, :default => 0
+  virtual_attribute :total_vcpus, :integer, :through => :hardware, :source => :cpu_total_cores, :default => 0
+  virtual_attribute :ram_size, :integer, :through => :hardware, :source => :memory_mb, :default => 0
   virtual_column :enabled_inbound_ports,        :type => :numeric_set  # The following are not set to use anything
   virtual_column :enabled_outbound_ports,       :type => :numeric_set  # because get_ports ends up re-querying the
   virtual_column :enabled_udp_inbound_ports,    :type => :numeric_set  # database anyway.
@@ -132,10 +140,11 @@ class Host < ApplicationRecord
   virtual_column :enabled_run_level_4_services, :type => :string_set,  :uses => :host_services
   virtual_column :enabled_run_level_5_services, :type => :string_set,  :uses => :host_services
   virtual_column :enabled_run_level_6_services, :type => :string_set,  :uses => :host_services
-  virtual_delegate :annotation, :to => :hardware, :prefix => "v", :allow_nil => true, :type => :string
+  virtual_attribute :v_annotation, :string, :through => :hardware, :source => :annotation
   virtual_column :vmm_vendor_display,           :type => :string
   virtual_column :ipmi_enabled,                 :type => :boolean
-  virtual_column :archived, :type => :boolean
+  virtual_attribute :archived, :boolean, :arel => ->(t) { t.grouping(t[:ems_id].eq(nil)) }
+  virtual_column :normalized_state, :type => :string
 
   virtual_has_many   :resource_pools,                               :uses => :all_relationships
   virtual_has_many   :miq_scsi_luns,                                :uses => {:hardware => {:storage_adapters => {:miq_scsi_targets => :miq_scsi_luns}}}
@@ -159,7 +168,7 @@ class Host < ApplicationRecord
   self.default_relationship_type = "ems_metadata"
 
   include DriftStateMixin
-  virtual_delegate :last_scan_on, :to => "last_drift_state_timestamp_rec.timestamp", :allow_nil => true, :type => :datetime
+  virtual_attribute :last_scan_on, :datetime, :through => :last_drift_state_timestamp_rec, :source => :timestamp
 
   delegate :queue_name_for_ems_operations, :to => :ext_management_system, :allow_nil => true
 
@@ -171,28 +180,42 @@ class Host < ApplicationRecord
   include AuthenticationMixin
   include AsyncDeleteMixin
   include ComplianceMixin
-  include AvailabilityMixin
   include AggregationMixin
 
   before_create :make_smart
   after_save    :process_events
 
+  supports     :check_compliance_queue
   supports     :destroy
-  supports_not :quick_stats
-  supports     :reset do
-    unsupported_reason_add(:reset, _("The Host is not configured for IPMI")) if ipmi_address.blank?
-    unsupported_reason_add(:reset, _("The Host has no IPMI credentials")) if authentication_type(:ipmi).nil?
-    if authentication_userid(:ipmi).blank? || authentication_password(:ipmi).blank?
-      unsupported_reason_add(:reset, _("The Host has invalid IPMI credentials"))
+  supports     :scan_and_check_compliance_queue
+  supports     :ipmi do
+    if ipmi_address.blank?
+      _("The Host is not configured for IPMI")
+    elsif authentication_type(:ipmi).nil?
+      _("The Host has no IPMI credentials")
+    elsif authentication_userid(:ipmi).blank? || authentication_password(:ipmi).blank?
+      _("The Host has invalid IPMI credentials")
     end
   end
-  supports_not :refresh_advanced_settings
-  supports_not :refresh_firewall_rules
-  supports_not :refresh_logs
-  supports_not :refresh_network_interfaces
-  supports_not :set_node_maintenance
-  supports_not :smartstate_analysis
-  supports_not :unset_node_maintenance
+
+  # if you change this, please check in on VmWare#start
+  supports :start do
+    if power_state != "off"
+      _("The Host is not in power state off")
+    else
+      unsupported_reason(:ipmi)
+    end
+  end
+
+  supports :stop do
+    if power_state != "on"
+      _("The Host is not in powered on")
+    else
+      unsupported_reason(:ipmi)
+    end
+  end
+
+  supports(:reset) { unsupported_reason(:ipmi) }
 
   def self.non_clustered
     where(:ems_cluster_id => nil)
@@ -239,96 +262,6 @@ class Host < ApplicationRecord
   end
   private :raise_cluster_event
 
-  def validate_reboot
-    validate_esx_host_connected_to_vc_with_power_state('on')
-  end
-
-  def validate_shutdown
-    validate_esx_host_connected_to_vc_with_power_state('on')
-  end
-
-  def validate_standby
-    validate_esx_host_connected_to_vc_with_power_state('on')
-  end
-
-  def validate_enter_maint_mode
-    validate_esx_host_connected_to_vc_with_power_state('on')
-  end
-
-  def validate_exit_maint_mode
-    validate_esx_host_connected_to_vc_with_power_state('maintenance')
-  end
-
-  def validate_enable_vmotion
-    validate_esx_host_connected_to_vc_with_power_state('on')
-  end
-
-  def validate_disable_vmotion
-    validate_esx_host_connected_to_vc_with_power_state('on')
-  end
-
-  def validate_vmotion_enabled?
-    validate_esx_host_connected_to_vc_with_power_state('on')
-  end
-
-  def validate_start
-    validate_ipmi('off')
-  end
-
-  def validate_stop
-    validate_ipmi('on')
-  end
-
-  def validate_ipmi(pstate = nil)
-    return {:available => false, :message => "The Host is not configured for IPMI"}   if ipmi_address.blank?
-    return {:available => false, :message => "The Host has no IPMI credentials"}      if authentication_type(:ipmi).nil?
-    return {:available => false, :message => "The Host has invalid IPMI credentials"} if authentication_userid(:ipmi).blank? || authentication_password(:ipmi).blank?
-    msg = validate_power_state(pstate)
-    return msg unless msg.nil?
-    {:available => true,  :message => nil}
-  end
-
-  def validate_esx_host_connected_to_vc_with_power_state(pstate)
-    msg = validate_esx_host_connected_to_vc
-    return msg unless msg.nil?
-    msg = validate_power_state(pstate)
-    return msg unless msg.nil?
-    {:available => true,   :message => nil}
-  end
-
-  def validate_power_state(pstate)
-    return nil if pstate.nil?
-    case pstate.class.name
-    when 'String'
-      return {:available => false,   :message => "The Host is not powered '#{pstate}'"} unless power_state == pstate
-    when 'Array'
-      return {:available => false,   :message => "The Host is not powered #{pstate.inspect}"} unless pstate.include?(power_state)
-    end
-  end
-
-  def validate_esx_host_connected_to_vc
-    # Check the basic require to interact with a VM.
-    return {:available => false, :message => "The Host is not connected to an active Provider"} unless has_active_ems?
-    return {:available => false, :message => "The Host is not VMware ESX"} unless is_vmware_esx?
-    nil
-  end
-
-  def validate_scan_and_check_compliance_queue
-    {:available => true, :message => nil}
-  end
-
-  def validate_check_compliance_queue
-    {:available => true, :message => nil}
-  end
-
-  def validate_reset
-    validate_unsupported("Reset is unavailable")
-  end
-
-  def validate_unsupported(message_prefix)
-    {:available => false, :message => "#{message_prefix} is not available for #{self.class.model_suffix} Host."}
-  end
-
   def has_active_ems?
     !!ext_management_system
   end
@@ -360,117 +293,73 @@ class Host < ApplicationRecord
   end
 
   def reset
-    if supports?(:reset)
+    if verbose_supports?(:reset)
       check_policy_prevent("request_host_reset", "ipmi_power_reset")
-    else
-      _log.warn("Cannot stop because <#{unsupported_reason(:reset)}>")
     end
   end
 
   def start
-    if validate_start[:available] && power_state == 'standby' && respond_to?(:vim_power_up_from_standby)
-      check_policy_prevent("request_host_start", "vim_power_up_from_standby")
-    else
-      msg = validate_ipmi
-      if msg[:available]
-        pstate = run_ipmi_command(:power_state)
-        if pstate == 'off'
-          check_policy_prevent("request_host_start", "ipmi_power_on")
-        else
-          _log.warn("Non-Startable IPMI power state = <#{pstate.inspect}>")
-        end
+    if verbose_supports?(:start) && supports?(:ipmi)
+      pstate = run_ipmi_command(:power_state)
+      if pstate == "off"
+        check_policy_prevent("request_host_start", "ipmi_power_on")
       else
-        _log.warn("Cannot start because <#{msg[:message]}>")
+        _log.warn("Non-Startable IPMI power state = <#{pstate.inspect}>")
       end
     end
   end
 
   def stop
-    msg = validate_stop
-    if msg[:available]
+    if verbose_supports?(:stop)
       check_policy_prevent("request_host_stop", "ipmi_power_off")
-    else
-      _log.warn("Cannot stop because <#{msg[:message]}>")
     end
   end
 
   def standby
-    msg = validate_standby
-    if msg[:available]
-      if power_state == 'on' && respond_to?(:vim_power_down_to_standby)
-        check_policy_prevent("request_host_standby", "vim_power_down_to_standby")
-      else
-        _log.warn("Cannot go into standby mode from power state = <#{power_state.inspect}>")
-      end
-    else
-      _log.warn("Cannot go into standby mode because <#{msg[:message]}>")
+    if verbose_supports?(:standby)
+      check_policy_prevent("request_host_standby", "vim_power_down_to_standby")
     end
   end
 
   def enter_maint_mode
-    msg = validate_enter_maint_mode
-    if msg[:available]
-      if power_state == 'on' && respond_to?(:vim_enter_maintenance_mode)
-        check_policy_prevent("request_host_enter_maintenance_mode", "vim_enter_maintenance_mode")
-      else
-        _log.warn("Cannot enter maintenance mode from power state = <#{power_state.inspect}>")
-      end
-    else
-      _log.warn("Cannot enter maintenance mode because <#{msg[:message]}>")
+    if verbose_supports?(:enter_maint_mode)
+      check_policy_prevent("request_host_enter_maintenance_mode", "vim_enter_maintenance_mode")
     end
   end
 
   def exit_maint_mode
-    msg = validate_exit_maint_mode
-    if msg[:available] && respond_to?(:vim_exit_maintenance_mode)
+    if verbose_supports?(:exit_maint_mode)
       check_policy_prevent("request_host_exit_maintenance_mode", "vim_exit_maintenance_mode")
-    else
-      _log.warn("Cannot exit maintenance mode because <#{msg[:message]}>")
     end
   end
 
   def shutdown
-    msg = validate_shutdown
-    if msg[:available] && respond_to?(:vim_shutdown)
+    if verbose_supports?(:shutdown)
       check_policy_prevent("request_host_shutdown", "vim_shutdown")
-    else
-      _log.warn("Cannot shutdown because <#{msg[:message]}>")
     end
   end
 
   def reboot
-    msg = validate_reboot
-    if msg[:available] && respond_to?(:vim_reboot)
+    if verbose_supports?(:reboot)
       check_policy_prevent("request_host_reboot", "vim_reboot")
-    else
-      _log.warn("Cannot reboot because <#{msg[:message]}>")
     end
   end
 
   def enable_vmotion
-    msg = validate_enable_vmotion
-    if msg[:available] && respond_to?(:vim_enable_vmotion)
+    if verbose_supports?(:enable_vmotion)
       check_policy_prevent("request_host_enable_vmotion", "vim_enable_vmotion")
-    else
-      _log.warn("Cannot enable vmotion because <#{msg[:message]}>")
     end
   end
 
   def disable_vmotion
-    msg = validate_disable_vmotion
-    if msg[:available] && respond_to?(:vim_disable_vmotion)
+    if verbose_supports?(:disable_vmotion)
       check_policy_prevent("request_host_disable_vmotion", "vim_disable_vmotion")
-    else
-      _log.warn("Cannot disable vmotion because <#{msg[:message]}>")
     end
   end
 
   def vmotion_enabled?
-    msg = validate_vmotion_enabled?
-    if msg[:available] && respond_to?(:vim_vmotion_enabled?)
+    if verbose_supports?(:vmotion_enabled, "check if vmotion is enabled")
       vim_vmotion_enabled?
-    else
-      _log.warn("Cannot check if vmotion is enabled because <#{msg[:message]}>")
     end
   end
 
@@ -519,13 +408,16 @@ class Host < ApplicationRecord
   def arch
     if vmm_product.to_s.include?('ESX')
       return 'x86_64' if vmm_version.to_i >= 4
+
       return 'x86'
     end
 
     return "unknown" unless hardware && !hardware.cpu_type.nil?
+
     cpu = hardware.cpu_type.to_s.downcase
     return cpu if cpu.include?('x86')
     return "x86" if cpu.starts_with?("intel")
+
     "unknown"
   end
 
@@ -680,7 +572,7 @@ class Host < ApplicationRecord
   end
 
   def owning_folder
-    detect_ancestor(:of_type => "EmsFolder") { |a| !a.kind_of?(Datacenter) && !%w(host vm).include?(a.name) }
+    detect_ancestor(:of_type => "EmsFolder") { |a| !a.kind_of?(Datacenter) && !%w[host vm].include?(a.name) }
   end
 
   def parent_datacenter
@@ -699,12 +591,13 @@ class Host < ApplicationRecord
     _log.info("for host [#{id}] host saved")
   rescue => err
     _log.log_backtrace(err)
-    return false
+    false
   end
 
   def self.batch_update_authentication(host_ids, creds = {})
     errors = []
     return true if host_ids.blank?
+
     host_ids.each do |id|
       begin
         host = Host.find(id)
@@ -727,6 +620,8 @@ class Host < ApplicationRecord
       :userid => userid
     }
 
+    encrypt_verify_credential_params!(options)
+
     queue_opts = {
       :args        => [auth_type, options],
       :class_name  => self.class.name,
@@ -740,10 +635,13 @@ class Host < ApplicationRecord
     MiqTask.generic_action_with_callback(task_opts, queue_opts)
   end
 
-  def verify_credentials?(*args)
+  def verify_credentials?(auth_type = nil, options = {})
     # Prevent the connection details, including the password, from being leaked into the logs
     # and MiqQueue by only returning true/false
-    !!verify_credentials(*args)
+    auth = options.delete("authentications")
+    update_authentication(auth.deep_symbolize_keys, :save => false) if auth.present?
+
+    !!verify_credentials(auth_type, options)
   end
 
   def verify_credentials(auth_type = nil, options = {})
@@ -757,10 +655,15 @@ class Host < ApplicationRecord
     when 'ws'     then verify_credentials_with_ws(auth_type)
     when 'ipmi'   then verify_credentials_with_ipmi(auth_type)
     else
-      verify_credentials_with_ws(auth_type)
+      verify_credentials_default(auth_type, options)
     end
 
     true
+  end
+
+  # different providers use different default credential checks
+  def verify_credentials_default(auth_type, options)
+    verify_credentials_with_ssh(auth_type, options)
   end
 
   def verify_credentials_with_ws(_auth_type = nil, _options = {})
@@ -769,7 +672,7 @@ class Host < ApplicationRecord
 
   def verify_credentials_with_ssh(auth_type = nil, options = {})
     raise MiqException::MiqHostError, _("No credentials defined") if missing_credentials?(auth_type)
-    unless os_image_name =~ /linux_*/
+    unless /linux_*/.match?(os_image_name)
       raise MiqException::MiqHostError, _("Logon to platform [%{os_name}] not supported") % {:os_name => os_image_name}
     end
 
@@ -803,191 +706,6 @@ class Host < ApplicationRecord
       end
     else
       raise MiqException::MiqHostError, _("IPMI is not available on this Host")
-    end
-  end
-
-  def self.discoverByIpRange(starting, ending, options = {:ping => true})
-    options[:timeout] ||= 10
-    pattern = /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/
-    raise _("Starting address is malformed") if (starting =~ pattern).nil?
-    raise _("Ending address is malformed") if (ending =~ pattern).nil?
-
-    starting.split(".").each_index do |i|
-      if starting.split(".")[i].to_i > 255 || ending.split(".")[i].to_i > 255
-        raise _("IP address octets must be 0 to 255")
-      end
-      if starting.split(".")[i].to_i > ending.split(".")[i].to_i
-        raise _("Ending address must be greater than starting address")
-      end
-    end
-
-    network_id = starting.split(".")[0..2].join(".")
-    host_start = starting.split(".").last.to_i
-    host_end = ending.split(".").last.to_i
-
-    host_start.upto(host_end) do |h|
-      ipaddr = network_id + "." + h.to_s
-
-      unless Host.find_by(:ipaddress => ipaddr).nil? # skip discover for existing hosts
-        _log.info("ipaddress '#{ipaddr}' exists, skipping discovery")
-        next
-      end
-
-      discover_options = {:ipaddr         => ipaddr,
-                          :ping           => options[:ping],
-                          :timeout        => options[:timeout],
-                          :discover_types => options[:discover_types],
-                          :credentials    => options[:credentials]
-      }
-
-      # Add Windows domain credentials for HyperV WMI checks
-      default_zone = Zone.find_by(:name => 'default')
-      if !default_zone.nil? && default_zone.has_authentication_type?(:windows_domain)
-        discover_options[:windows_domain] = [default_zone.authentication_userid(:windows_domain), default_zone.authentication_password_encrypted(:windows_domain)]
-      end
-
-      MiqQueue.put(:class_name => "Host", :method_name => "discoverHost", :data => Marshal.dump(discover_options), :server_guid => MiqServer.my_guid)
-    end
-  end
-
-  def reset_discoverable_fields
-    raise _("Host Not Resettable - No IPMI Address") if ipmi_address.blank?
-    cred = authentication_type(:ipmi)
-    raise _("Host Not Resettable - No IPMI Credentials") if cred.nil?
-
-    run_callbacks(:destroy) { false } # Run only the before_destroy callbacks to destroy all associations
-    reload
-
-    attributes.each do |key, _value|
-      next if %w(id guid ipmi_address mac_address name created_on updated_on vmm_vendor).include?(key)
-      send("#{key}=", nil)
-    end
-
-    make_smart # before_create callback
-    self.settings   = nil
-    self.name       = "IPMI <#{ipmi_address}>"
-    self.vmm_vendor = 'unknown'
-    save!
-
-    authentications.create(cred.attributes) unless cred.nil?
-    self
-  end
-
-  def detect_discovered_os(ost)
-    # Determine os
-    os_type = nil
-    if is_vmware?
-      os_name = "VMware ESX Server"
-    elsif ost.os.include?(:linux)
-      os_name = "linux"
-    elsif ost.os.include?(:mswin)
-      os_name = "windows"
-      os_type = os_name
-    else
-      os_name = nil
-    end
-
-    return os_name, os_type
-  end
-
-  def detect_discovered_hypervisor(ost, ipaddr)
-    find_method = :find_by_ipaddress
-    if ost.hypervisor.include?(:hyperv)
-      self.name        = "Microsoft Hyper-V (#{ipaddr})"
-      self.type        = "ManageIQ::Providers::Microsoft::InfraManager::Host"
-      self.ipaddress   = ipaddr
-      self.vmm_vendor  = "microsoft"
-      self.vmm_product = "Hyper-V"
-    elsif ost.hypervisor.include?(:esx)
-      self.name        = "VMware ESX Server (#{ipaddr})"
-      self.ipaddress   = ipaddr
-      self.vmm_vendor  = "vmware"
-      self.vmm_product = "Esx"
-      self.type        = "ManageIQ::Providers::Vmware::InfraManager::HostEsx"
-    elsif ost.hypervisor.include?(:ipmi)
-      find_method       = :find_by_ipmi_address
-      self.name         = "IPMI (#{ipaddr})"
-      self.type         = "Host"
-      self.vmm_vendor   = "unknown"
-      self.vmm_product  = nil
-      self.ipmi_address = ipaddr
-      self.ipaddress    = nil
-      self.hostname     = nil
-    else
-      self.vmm_vendor = ost.hypervisor.join(", ")
-      self.type       = "Host"
-    end
-
-    find_method
-  end
-
-  def self.ost_inspect(ost)
-    hash = ost.marshal_dump.dup
-    hash.delete(:credentials)
-    OpenStruct.new(hash).inspect
-  end
-
-  def self.discoverHost(options)
-    require 'manageiq/network_discovery/discovery'
-    ost = OpenStruct.new(Marshal.load(options))
-    _log.info("Discovering Host: #{ost_inspect(ost)}")
-    begin
-      ManageIQ::NetworkDiscovery::Discovery.scan_host(ost)
-
-      if ost.hypervisor.empty?
-        _log.info("NOT Discovered: #{ost_inspect(ost)}")
-      else
-        _log.info("Discovered: #{ost_inspect(ost)}")
-
-        if %i(virtualcenter scvmm rhevm openstack_infra).any? { |ems_type| ost.hypervisor.include?(ems_type) }
-          ExtManagementSystem.create_discovered_ems(ost)
-          return # only create ems instance, no host.
-        end
-
-        host = new(
-          :name      => "#{ost.ipaddr} - discovered #{Time.now.utc.strftime("%Y-%m-%d %H:%M %Z")}",
-          :ipaddress => ost.ipaddr,
-          :hostname  => Socket.getaddrinfo(ost.ipaddr, nil)[0][2]
-        )
-
-        find_method        = host.detect_discovered_hypervisor(ost, ost.ipaddr)
-        os_name, os_type = host.detect_discovered_os(ost)
-
-        if Host.send(find_method, ost.ipaddr).nil?
-          # It may have been added by someone else while we were discovering
-          host.save!
-
-          if ost.hypervisor.include?(:ipmi)
-            # IPMI - Check if credentials were passed and try to scan host
-            cred = (ost.credentials || {})[:ipmi]
-            unless cred.nil? || cred[:userid].blank?
-              ipmi = MiqIPMI.new(host.ipmi_address, cred[:userid], cred[:password])
-              if ipmi.connected?
-                _log.warn("IPMI connected to Host:<#{host.ipmi_address}> with User:<#{cred[:userid]}>")
-                host.update_authentication(:ipmi => cred)
-                host.scan
-              else
-                _log.warn("IPMI did not connect to Host:<#{host.ipmi_address}> with User:<#{cred[:userid]}>")
-              end
-            end
-          else
-            # Try to convert IP address to hostname and update host data
-            netHostName = Host.get_hostname(ost.ipaddr)
-            host.name = netHostName if netHostName
-
-            EmsRefresh.save_operating_system_inventory(host, :product_name => os_name, :product_type => os_type) unless os_name.nil?
-            EmsRefresh.save_hardware_inventory(host, {:cpu_type => "intel"})
-
-            host.save!
-          end
-
-          _log.info("#{host.name} created")
-          AuditEvent.success(:event => "host_created", :target_id => host.id, :target_class => "Host", :message => "#{host.name} created")
-        end
-      end
-    rescue => err
-      _log.log_backtrace(err)
-      AuditEvent.failure(:event => "host_created", :target_class => "Host", :message => "creating host, #{err}")
     end
   end
 
@@ -1050,13 +768,16 @@ class Host < ApplicationRecord
       sb = ssu.shell_exec("esxupdate query")
       t = Time.now
       sb.each_line do |line|
-        next if line =~ /-{5,}/ # skip any header/footer rows
+        next if /-{5,}/.match?(line) # skip any header/footer rows
+
         data = line.split(" ")
         # Find the lines we should skip
         begin
           next if data[1, 2].nil?
+
           dhash = {:name => data[0], :vendor => "VMware", :installed_on => Time.parse(data[1, 2].join(" ")).utc}
           next if dhash[:installed_on] - t >= 0
+
           dhash[:description] = data[3..-1].join(" ") unless data[3..-1].nil?
           patches << dhash
         rescue ArgumentError => err
@@ -1133,6 +854,7 @@ class Host < ApplicationRecord
       la = line.split(' ')
       if la.length == 2
         next if la.first[0, 1] == '#'
+
         self.ssh_permit_root_login = la.last.to_s.downcase
         break
       end
@@ -1159,7 +881,7 @@ class Host < ApplicationRecord
         if ipmi.connected?
           self.power_state = ipmi.power_state
           mac = ipmi.mac_address
-          self.mac_address = mac unless mac.blank?
+          self.mac_address = mac if mac.present?
 
           hw_info = {:manufacturer => ipmi.manufacturer, :model => ipmi.model}
           if hardware.nil?
@@ -1177,7 +899,8 @@ class Host < ApplicationRecord
   end
 
   def ipmi_config_valid?(include_mac_addr = false)
-    return false unless (ipmi_address.present? && has_credentials?(:ipmi))
+    return false unless ipmi_address.present? && has_credentials?(:ipmi)
+
     include_mac_addr == true ? mac_address.present? : true
   end
   alias_method :ipmi_enabled, :ipmi_config_valid?
@@ -1218,6 +941,7 @@ class Host < ApplicationRecord
 
   def firewall_rules
     return [] if operating_system.nil?
+
     operating_system.firewall_rules
   end
 
@@ -1374,7 +1098,7 @@ class Host < ApplicationRecord
   end
 
   def validate_task(task)
-    if ext_management_system&.zone == Zone.maintenance_zone
+    if ext_management_system&.zone&.maintenance?
       task.update_status(MiqTask::STATE_FINISHED, MiqTask::STATUS_ERROR, "#{ext_management_system.name} is paused")
       return false
     end
@@ -1568,7 +1292,8 @@ class Host < ApplicationRecord
 
   def domain
     names = hostname.to_s.split(',').first.to_s.split('.')
-    return names[1..-1].join('.') unless names.blank?
+    return names[1..-1].join('.') if names.present?
+
     nil
   end
 
@@ -1630,10 +1355,11 @@ class Host < ApplicationRecord
     return values if function.nil?
 
     case function.to_sym
-    when :min, :max then return values.send(function)
+    when :min, :max then values.send(function)
     when :avg
       return 0 if values.length == 0
-      return (values.compact.sum / values.length)
+
+      (values.compact.sum / values.length)
     else
       raise _("Function %{function} is invalid, should be one of :min, :max, :avg or nil") % {:function => function}
     end
@@ -1665,14 +1391,18 @@ class Host < ApplicationRecord
     perf_hash
   end
 
-  # Host Discovery Types and Platforms
-
-  def self.host_create_os_types
-    # TODO: This feature has been removed, once the UI no longer calls this
-    # method we can delete it
-    []
+  # Display or hide certain charts
+  def cpu_mhz_available?
+    true
   end
-  Vmdb::Deprecation.deprecate_methods(self, :host_create_os_types)
+
+  def cpu_ready_available?
+    true
+  end
+
+  def cpu_percent_available?
+    false
+  end
 
   def writable_storages
     if host_storages.loaded? && host_storages.all? { |hs| hs.association(:storage).loaded? }
@@ -1690,18 +1420,55 @@ class Host < ApplicationRecord
     end
   end
 
-  def archived?
-    ems_id.nil?
+  def archived
+    has_attribute?("archived") ? self["archived"] : ems_id.nil?
   end
-  alias archived archived?
+  alias archived? archived
 
   def normalized_state
     return 'archived' if archived?
-    return power_state unless power_state.nil?
+    return power_state if power_state.present?
+
     "unknown"
   end
 
   def self.display_name(number = 1)
     n_('Host', 'Hosts', number)
+  end
+
+  def verbose_supports?(feature, description = nil)
+    if (reason = unsupported_reason(feature))
+      description ||= feature.to_s.humanize(:capitalize => false)
+      _log.warn("Cannot #{description} because <#{reason}>")
+    end
+    !reason
+  end
+
+  private
+
+  # Ensure that any passwords are encrypted before putting them onto the queue for any
+  # DDF fields which are a password type
+  def encrypt_verify_credential_params!(options)
+    encrypted_columns = Authentication.encrypted_columns
+
+    traverse_hash(options) do |value, key_path|
+      value.slice(*encrypted_columns).each do |key, val|
+        options.store_path(key_path + [key], ManageIQ::Password.try_encrypt(val))
+      end
+    end
+  end
+
+  def traverse_hash(hash, path = [], &block)
+    hash.each do |key, val|
+      key_path = path << key
+
+      if val.kind_of?(Array)
+        val.each { |v| traverse_hash(v, key_path, &block)}
+      elsif val.kind_of?(Hash)
+        yield val, key_path
+
+        traverse_hash(val, key_path, &block)
+      end
+    end
   end
 end

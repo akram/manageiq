@@ -22,6 +22,7 @@ class Storage < ApplicationRecord
   has_many :storage_files,       :dependent => :destroy
   has_many :storage_files_files, -> { where("rsc_type = 'file'") }, :class_name => "StorageFile", :foreign_key => "storage_id"
   has_many :files,               -> { where("rsc_type = 'file'") }, :class_name => "StorageFile", :foreign_key => "storage_id"
+  has_many :iso_images, :dependent => :destroy
 
   has_many :miq_events, :as => :target, :dependent => :destroy
 
@@ -41,7 +42,6 @@ class Storage < ApplicationRecord
   include Metric::CiMixin
   include StorageMixin
   include AsyncDeleteMixin
-  include AvailabilityMixin
   include TenantIdentityMixin
   include CustomActionsMixin
 
@@ -68,23 +68,19 @@ class Storage < ApplicationRecord
 
   delegate :queue_name_for_ems_operations, :to => :ext_management_system, :allow_nil => true
 
-  SUPPORTED_STORAGE_TYPES = %w( VMFS NFS NFS41 FCP ISCSI GLUSTERFS )
+  SUPPORTED_STORAGE_TYPES = %w[VSAN VMFS NAS NFS NFS41 ISCSI DIR FCP CSVFS NTFS GLUSTERFS].freeze
 
   supports :smartstate_analysis do
     if !ext_management_system&.class&.supports?(:smartstate_analysis)
-      unsupported_reason_add(:smartstate_analysis, _("Smartstate Analysis cannot be performed on selected Datastore"))
+      _("Smartstate Analysis cannot be performed on selected Datastore")
     elsif !ext_management_system&.authentication_status_ok?
-      unsupported_reason_add(:smartstate_analysis, _("There are no EMSs with valid credentials for this Datastore"))
+      _("There are no EMSs with valid credentials for this Datastore")
+    elsif !storage_type_supported_for_ssa?
+      _("Smartstate Analysis unsupported for storage type %{store_type}" % {:store_type => store_type})
     end
   end
 
-  supports :delete do
-    if vms_and_templates.any? || hosts.any?
-      unsupported_reason_add(:delete, _("Only storage without VMs and Hosts can be removed"))
-    end
-  end
-
-  supports_not :evacuate
+  supports(:delete) { _("Only storage without VMs and Hosts can be removed") if vms_and_templates.any? || hosts.any? }
 
   def to_s
     name
@@ -185,7 +181,7 @@ class Storage < ApplicationRecord
       :method_name  => 'smartstate_analysis',
       :args         => [miq_task_id],
       :msg_timeout  => self.class.scan_collection_timeout,
-      :miq_callback => cb,
+      :miq_callback => cb
     )
   end
 
@@ -315,7 +311,7 @@ class Storage < ApplicationRecord
   end
 
   def self.create_scan_task(task_name, userid, storages)
-    context_data = {:targets  => storages.collect(&:id).sort, :complete => [], :pending  => {}}
+    context_data = {:targets => storages.collect(&:id).sort, :complete => [], :pending => {}}
     miq_task     = MiqTask.create(
       :name         => task_name,
       :state        => MiqTask::STATE_QUEUED,
@@ -348,17 +344,12 @@ class Storage < ApplicationRecord
   end
 
   def scan(userid = "system", _role = "ems_operations")
-    unless SUPPORTED_STORAGE_TYPES.include?(store_type.upcase)
+    if (reason = unsupported_reason(:smartstate_analysis))
       raise(MiqException::MiqUnsupportedStorage,
-            _("Action not supported for Datastore type [%{store_type}], [%{name}] with id: [%{id}]") %
-              {:store_type => store_type, :name => name, :id => id})
+            _("Action not supported for Datastore type [%{store_type}], [%{name}] with id: [%{id}] %{error}") %
+              {:store_type => store_type, :name => name, :id => id, :error => reason})
     end
 
-    unless ext_management_system&.authentication_status_ok?
-      raise(MiqException::MiqStorageError,
-            _("Check that an EMS has valid credentials for Datastore [%{name}] with id: [%{id}]") %
-              {:name => name, :id => id})
-    end
     task_name = "SmartState Analysis for [#{name}]"
     self.class.create_scan_task(task_name, userid, [self])
   end
@@ -492,6 +483,7 @@ class Storage < ApplicationRecord
 
   def qmessage?(method_name)
     return false if $_miq_worker_current_msg.nil?
+
     ($_miq_worker_current_msg.class_name == self.class.name) && ($_miq_worker_current_msg.instance_id = id) && ($_miq_worker_current_msg.method_name == method_name)
   end
 
@@ -511,6 +503,11 @@ class Storage < ApplicationRecord
     unless miq_task_id.nil?
       miq_task = MiqTask.find_by(:id => miq_task_id)
       miq_task.state_active unless miq_task.nil?
+    end
+
+    if ext_management_system.nil?
+      _log.warn("Storage: [#{name}] is not connected to an EMS.")
+      raise MiqException::MiqUnreachableStorage, _("Storage: [%{name}] is not connected to an EMS.") % {:name => name}
     end
 
     unless ext_management_system.authentication_status_ok?
@@ -555,10 +552,10 @@ class Storage < ApplicationRecord
 
   def vm_ids_by_path
     host_ids = hosts.collect(&:id)
-    return nil if host_ids.empty?
-    Vm.where(:host_id => host_ids).includes(:storage).inject({}) do |h, v|
+    return {} if host_ids.empty?
+
+    Vm.where(:host_id => host_ids).includes(:storage).each_with_object({}) do |v, h|
       h[File.dirname(v.path)] = v.id
-      h
     end
   end
 
@@ -566,6 +563,7 @@ class Storage < ApplicationRecord
   def self.get_common_refresh_targets(storages)
     storages = Array.wrap(storages)
     return [] if storages.empty?
+
     storages = find(storages) unless storages[0].kind_of?(Storage)
 
     objs = storages.collect do |s|
@@ -740,7 +738,7 @@ class Storage < ApplicationRecord
         ['registered', 'unregistered'].each do |mode|
           attrs["derived_storage_used_#{mode}".to_sym] ||= 0
 
-          send("#{mode}_vms").each do |vm|
+          send(:"#{mode}_vms").each do |vm|
             vm_attrs = {:capture_interval => interval, :resource_name => vm.name}
             vm_attrs[:derived_storage_vm_count_managed] = 1
             vm_attrs["derived_storage_vm_count_#{mode}".to_sym] = 1
@@ -814,9 +812,8 @@ class Storage < ApplicationRecord
     with_relationship_type("vm_scan_storage_affinity") { parents }
   end
 
-  # @param [String, Storage] store_type upcased version of the storage type
-  def self.supports?(store_type)
-    Storage::SUPPORTED_STORAGE_TYPES.include?(store_type)
+  def storage_type_supported_for_ssa?
+    SUPPORTED_STORAGE_TYPES.include?(store_type.upcase)
   end
 
   def self.display_name(number = 1)

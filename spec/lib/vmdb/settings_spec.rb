@@ -7,10 +7,10 @@ RSpec.describe Vmdb::Settings do
       described_class.walk do |key, value, path, owning|
         expect(owning).to be_kind_of(Config::Options)
 
-        if %i(a d e).include?(key)
+        if %i[a d e].include?(key)
           expect(value).to be_kind_of(Config::Options)
           value = value.to_hash
-        elsif %i(i).include?(key)
+        elsif %i[i].include?(key)
           expect(value).to be_kind_of(Array)
           value.each { |v| expect(v).to be_kind_of(Config::Options) }
           value = value.collect(&:to_hash)
@@ -20,7 +20,7 @@ RSpec.describe Vmdb::Settings do
       end
 
       expect(walked).to eq [
-        #key value                       path
+        # key value                       path
         [:a, {:b => 'c'},                [:a]],
         [:b, 'c',                        [:a, :b]],
         [:d, {:e => {:f => 'g'}},        [:d]],
@@ -38,7 +38,7 @@ RSpec.describe Vmdb::Settings do
         :hash:
         - &1
           A: *1
-        CONFIG
+      CONFIG
 
       expect { described_class.walk(y) { |_k, _v, _p, _o| } }.not_to raise_error
     end
@@ -206,27 +206,15 @@ RSpec.describe Vmdb::Settings do
       password  = "pa$$word"
       encrypted = ManageIQ::Password.encrypt(password)
 
-      described_class.save!(miq_server,
-        :authentication => {
-          :mode         => "ldap",
-          :ldaphost     => "localhost",
-          :bind_pwd     => password,
-          :user_proxies => [{:bind_pwd => password}]
-        }
-      )
+      described_class.save!(miq_server, :smtp => {:password => password})
 
       miq_server.reload
 
-      change = miq_server.settings_changes.find_by(:key => "/authentication/bind_pwd")
+      change = miq_server.settings_changes.find_by(:key => "/smtp/password")
       expect(change.value).to eq encrypted
-
-      change = miq_server.settings_changes.find_by(:key => "/authentication/user_proxies")
-      expect(change.value).to eq [{:bind_pwd => encrypted}]
     end
 
     it "saving settings for Zone does not change saved Region or Server settings" do
-      MiqRegion.seed
-
       described_class.save!(miq_server.zone, :api => {:token_ttl => "2.hour"})
       miq_server.zone.reload
       expect(miq_server.zone.settings_changes.count).to eq 1
@@ -240,8 +228,6 @@ RSpec.describe Vmdb::Settings do
     end
 
     it "saving settings for Region does not change saved Zone or Server settings" do
-      MiqRegion.seed
-
       described_class.save!(miq_server.zone.miq_region, :api => {:token_ttl => "3.hour"})
       miq_server.zone.miq_region.reload
 
@@ -265,8 +251,6 @@ RSpec.describe Vmdb::Settings do
       let(:reset) { described_class::RESET_COMMAND }
 
       before do
-        MiqRegion.seed
-
         described_class.save!(
           MiqRegion.first,
           :api     => {
@@ -368,13 +352,13 @@ RSpec.describe Vmdb::Settings do
       password  = "pa$$word"
       encrypted = ManageIQ::Password.encrypt(password)
 
-      data = {:authentication => {:bind_pwd => password}}.to_yaml
+      data = {:smtp => {:password => password}}.to_yaml
       described_class.save_yaml!(miq_server, data)
 
       miq_server.reload
 
       expect(miq_server.settings_changes.count).to eq 1
-      expect(miq_server.settings_changes.first).to have_attributes(:key   => "/authentication/bind_pwd",
+      expect(miq_server.settings_changes.first).to have_attributes(:key   => "/smtp/password",
                                                                    :value => encrypted)
     end
 
@@ -382,13 +366,13 @@ RSpec.describe Vmdb::Settings do
       password  = "pa$$word"
       encrypted = ManageIQ::Password.encrypt(password)
 
-      data = {:authentication => {:bind_pwd => encrypted}}.to_yaml
+      data = {:smtp => {:password => encrypted}}.to_yaml
       described_class.save_yaml!(miq_server, data)
 
       miq_server.reload
 
       expect(miq_server.settings_changes.count).to eq 1
-      expect(miq_server.settings_changes.first).to have_attributes(:key   => "/authentication/bind_pwd",
+      expect(miq_server.settings_changes.first).to have_attributes(:key   => "/smtp/password",
                                                                    :value => encrypted)
     end
 
@@ -447,6 +431,16 @@ RSpec.describe Vmdb::Settings do
       expect(subject).to eq(:level1 => {:level2 => [{:password => expected}]})
     end
 
+    it "handles nested passwords where the parent key matches and the child is a Hash" do
+      stub_settings(:level_password => {:password => initial})
+      expect(subject).to eq(:level_password => {:password => expected})
+    end
+
+    it "handles nested passwords where the parent key matches and the child is an Array" do
+      stub_settings(:level_password => [{:password => initial}])
+      expect(subject).to eq(:level_password => [{:password => expected}])
+    end
+
     it "handles all password keys" do
       initial_hash = described_class::PASSWORD_FIELDS.map { |key| [key.to_sym, initial] }.to_h
       stub_settings(initial_hash)
@@ -488,6 +482,48 @@ RSpec.describe Vmdb::Settings do
     end
   end
 
+  describe ".secret_filter" do
+    it "contains PASSWORD_FIELDS" do
+      expect(described_class.secret_filter).to eq(described_class::PASSWORD_FIELDS)
+    end
+
+    it "contains single custom change and PASSWORD_FIELDS" do
+      stub_settings_merge(:log => {:secret_filter => "bar"})
+      expect(described_class.secret_filter).to eq(["bar"] + described_class::PASSWORD_FIELDS)
+    end
+
+    it "contains multiple custom changes and PASSWORD_FIELDS" do
+      stub_settings_merge(:log => {:secret_filter => ["bar", "baz"]})
+      expect(described_class.secret_filter).to eq(["bar", "baz"] + described_class::PASSWORD_FIELDS)
+    end
+
+    it "can be passed to log_hashes" do
+      stub_settings_merge(:log => {:secret_filter => "bar"})
+
+      hash = {
+        :my_passwords => {           # Doesn't match on non-scalar values
+          :password   => "passw0rd", # Exact match
+          :foo_secret => "passw0rd", # Partial match
+          :bar        => "passw0rd", # Match on custom filter
+          :other      => "no change" # No change
+        }
+      }
+
+      io = StringIO.new
+      logger = ManageIQ::Loggers::Base.new(io)
+      logger.log_hashes(hash, :filter => described_class.secret_filter)
+
+      expect(io.string).to end_with <<~LOG
+        ---
+        :my_passwords:
+          :password: [FILTERED]
+          :foo_secret: [FILTERED]
+          :bar: [FILTERED]
+          :other: no change
+      LOG
+    end
+  end
+
   describe ".for_resource" do
     let(:server) { FactoryBot.create(:miq_server) }
 
@@ -503,13 +539,12 @@ RSpec.describe Vmdb::Settings do
     end
 
     it "with database changes on an Array" do
-      server.settings_changes.create!(:key => "/log/collection/current/pattern", :value => ["*.log"])
+      server.settings_changes.create!(:key => "/storage/debris/filters/ext_name", :value => ["xxx"])
       settings = Vmdb::Settings.for_resource(server)
-      expect(settings.log.collection.current.pattern).to eq ["*.log"]
+      expect(settings.storage.debris.filters.ext_name).to eq ["xxx"]
     end
 
     it "can load settings on each level from Region -> Zone -> Server hierarchy" do
-      MiqRegion.seed
       described_class.save!(server.zone.miq_region, :api => {:token_ttl => "3.hour"})
       described_class.save!(server.zone, :api => {:token_ttl => "4.hour"})
       described_class.save!(server, :api => {:token_ttl => "5.hour"})
@@ -525,8 +560,6 @@ RSpec.describe Vmdb::Settings do
     end
 
     it "applies settings from up the hierarchy: Region -> Zone -> Server" do
-      MiqRegion.seed
-
       described_class.save!(server.zone.miq_region, :api => {:token_ttl => "3.hour"})
       settings = Vmdb::Settings.for_resource(server)
       expect(settings.api.token_ttl).to eq "3.hour"
@@ -637,12 +670,12 @@ RSpec.describe Vmdb::Settings do
       encrypted = ManageIQ::Password.encrypt(password)
 
       miq_server = FactoryBot.create(:miq_server)
-      described_class.save!(miq_server, :authentication => {:bind_pwd => password})
+      described_class.save!(miq_server, :smtp => {:password => password})
 
       yaml = described_class.for_resource_yaml(miq_server)
 
       hash = YAML.load(yaml)
-      expect(hash.fetch_path(:authentication, :bind_pwd)).to eq encrypted
+      expect(hash.fetch_path(:smtp, :password)).to eq encrypted
     end
   end
 
@@ -652,7 +685,7 @@ RSpec.describe Vmdb::Settings do
       {"api" => {"token_ttl" => "2.minutes"}}.to_yaml
     )
 
-    expect(::Settings.api.token_ttl).to eq("2.minutes")
+    expect(Settings.api.token_ttl).to eq("2.minutes")
   end
 
   it ".validate", :providers_common => true do

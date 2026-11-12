@@ -2,6 +2,7 @@ class MiqWorker
   module ServiceWorker
     extend ActiveSupport::Concern
 
+    HEALTH_PORT  = 4000
     SERVICE_PORT = 3000
 
     def create_container_objects
@@ -11,6 +12,7 @@ class MiqWorker
         configure_worker_deployment(definition)
         configure_service_worker_deployment(definition)
 
+        add_liveness_probe(definition[:spec][:template][:spec][:containers].first)
         add_readiness_probe(definition[:spec][:template][:spec][:containers].first)
       end
 
@@ -26,11 +28,17 @@ class MiqWorker
       scale_deployment
     end
 
+    def add_liveness_probe(container_definition)
+      container_definition[:livenessProbe] = container_definition[:livenessProbe].except(:exec).merge(:httpGet => {:path => "/ping", :port => 4000})
+    end
+
     def add_readiness_probe(container_definition)
+      starting_timeout = self.class.worker_settings[:starting_timeout] || 3
+
       container_definition[:readinessProbe] = {
-        :tcpSocket           => {:port => SERVICE_PORT},
+        :httpGet             => {:path => "/ping", :port => HEALTH_PORT},
         :initialDelaySeconds => 60,
-        :timeoutSeconds      => 3
+        :timeoutSeconds      => starting_timeout
       }
     end
 
@@ -38,9 +46,7 @@ class MiqWorker
       definition[:spec][:template][:metadata][:labels].merge!(service_label)
 
       container = definition[:spec][:template][:spec][:containers].first
-      container[:ports] = [{:containerPort => SERVICE_PORT}]
-      container[:env] << {:name => "PORT", :value => container_port.to_s}
-      container[:env] << {:name => "BINDING_ADDRESS", :value => "0.0.0.0"}
+      container[:ports] = [{:containerPort => SERVICE_PORT}, {:containerPort => HEALTH_PORT}]
       container[:volumeMounts] ||= []
       definition[:spec][:template][:spec][:volumes] ||= []
     end
@@ -61,6 +67,10 @@ class MiqWorker
 
     def container_image
       ENV["WEBSERVER_WORKER_IMAGE"] || default_image
+    end
+
+    def container_environment_variables
+      super.merge("PORT" => container_port.to_s, "BINDING_ADDRESS" => "0.0.0.0")
     end
   end
 end

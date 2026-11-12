@@ -29,12 +29,12 @@ RSpec.describe FixAuth::AuthModel do
     end
 
     it "should determine available_columns" do
-      expect(subject.available_columns).to eq(%w(password auth_key))
+      expect(subject.available_columns).to eq(%w[password auth_key])
     end
 
     it "should limit available_columns when not all columns are available" do
-      allow(subject).to receive_messages(:column_names => %w(password id))
-      expect(subject.available_columns).to eq(%w(password))
+      allow(subject).to receive_messages(:column_names => %w[password id])
+      expect(subject.available_columns).to eq(%w[password])
     end
 
     it "should build selection criteria (non selects)" do
@@ -72,15 +72,6 @@ RSpec.describe FixAuth::AuthModel do
       it "should not encrypt plaintext columns" do
         subject.fix_passwords(plain, options)
         expect(plain).to_not be_password_changed
-      end
-
-      it "should raise exception for bad encryption" do
-        expect { subject.fix_passwords(bad, options) }.to raise_error(ManageIQ::Password::PasswordError)
-      end
-
-      it "should replace for bad encryption" do
-        subject.fix_passwords(bad, options.merge(:invalid => "other"))
-        expect(bad.password).to be_encrypted("other")
       end
 
       context "with the rare case where recryption succeeds but returns garbage" do

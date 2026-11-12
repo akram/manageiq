@@ -20,8 +20,6 @@
 class ProviderTagMapping < ApplicationRecord
   belongs_to :tag
 
-  require_nested :Mapper
-
   TAG_PREFIXES = ExtManagementSystem.label_mapping_prefixes.map { |name| "/managed/#{name}:" }.freeze
   validate :validate_tag_prefix
 
@@ -37,6 +35,7 @@ class ProviderTagMapping < ApplicationRecord
   # TODO: expensive.
   def self.controls_tag?(tag)
     return false unless tag.classification.try(:read_only) # never touch user-assignable tags.
+
     tag_ids = [tag.id, tag.category.tag_id].uniq
     where(:tag_id => tag_ids).any?
   end

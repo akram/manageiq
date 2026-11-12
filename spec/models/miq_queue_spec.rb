@@ -1,11 +1,45 @@
 RSpec.describe MiqQueue do
   specify { expect(FactoryBot.build(:miq_queue)).to be_valid }
 
-  context "#deliver" do
-    before do
-      _, @miq_server, @zone = EvmSpecHelper.create_guid_miq_server_zone
+  let(:miq_server) { EvmSpecHelper.local_miq_server }
+  let(:zone)       { miq_server.zone }
+
+  context "#validate" do
+    it "allows nil zones" do
+      msg = FactoryBot.build(:miq_queue)
+      expect(msg.zone).to be_nil
+      expect(msg).to be_valid
     end
 
+    it "allows valid zone names" do
+      msg = FactoryBot.build(:miq_queue, :zone => zone.name)
+      expect(msg).to be_valid
+    end
+
+    it "complains about unknown zone names" do
+      msg = FactoryBot.build(:miq_queue, :zone => "#{zone.name}x")
+      expect(msg).not_to be_valid
+    end
+
+    it "only queries a single zone one time" do
+      # cache the value
+      msg = FactoryBot.build(:miq_queue, :zone => zone.name)
+      expect(msg).to be_valid
+      expect { expect(FactoryBot.build(:miq_queue, :zone => zone.name)).to be_valid }.not_to make_database_queries
+    end
+
+    it "can find new zones" do
+      # potentially load the cached
+      msg = FactoryBot.build(:miq_queue, :zone => zone.name)
+      expect(msg).to be_valid
+      zone2 = FactoryBot.create(:zone)
+      msg = FactoryBot.build(:miq_queue, :zone => zone2.name)
+      expect(msg).to be_valid
+    end
+  end
+
+  context "#deliver" do
+    before { miq_server }
     it "requires class_name" do
       msg = MiqQueue.new(:class_name => nil)
       status, message, result = msg.deliver
@@ -18,7 +52,7 @@ RSpec.describe MiqQueue do
       msg = MiqQueue.new(:class_name => "NotARealClazz")
       status, message, result = msg.deliver
       expect(status).to eq(MiqQueue::STATUS_ERROR)
-      expect(message).to eq("uninitialized constant NotARealClazz")
+      expect(message).to include("uninitialized constant NotARealClazz")
       expect(result).to be_nil
     end
 
@@ -33,12 +67,12 @@ RSpec.describe MiqQueue do
     end
 
     it "uses object with instance_id" do
-      msg = MiqQueue.new(:class_name => "MiqServer", :instance_id => @miq_server.id, :method_name => "my_zone")
+      msg = MiqQueue.new(:class_name => "MiqServer", :instance_id => miq_server.id, :method_name => "my_zone")
 
       status, message, result = msg.deliver
       expect(status).to eq(MiqQueue::STATUS_OK)
       expect(message).to eq("Message delivered successfully")
-      expect(result).to eq(@miq_server.my_zone)
+      expect(result).to eq(miq_server.my_zone)
     end
 
     it "handles record not found" do
@@ -84,9 +118,9 @@ RSpec.describe MiqQueue do
     end
 
     it "doesn't pass target_id if an instance_id is passed" do
-      expect(MiqServer).to receive(:find).with(@miq_server.id).and_return(@miq_server)
-      expect(@miq_server).to receive(:my_zone).and_return("MY ZONE")
-      msg = MiqQueue.new(:class_name => "MiqServer", :instance_id => @miq_server.id, :method_name => "my_zone", :target_id => @miq_server.id)
+      expect(MiqServer).to receive(:find).with(miq_server.id).and_return(miq_server)
+      expect(miq_server).to receive(:my_zone).and_return("MY ZONE")
+      msg = MiqQueue.new(:class_name => "MiqServer", :instance_id => miq_server.id, :method_name => "my_zone", :target_id => miq_server.id)
 
       status, message, result = msg.deliver
       expect(status).to eq(MiqQueue::STATUS_OK)
@@ -109,7 +143,7 @@ RSpec.describe MiqQueue do
     it "works with MiqQueueRetryLater(deliver_on)" do
       deliver_on = Time.now.utc + 1.minute
       allow(Storage).to receive(:scan_eligible_storages).and_raise(MiqException::MiqQueueRetryLater.new(:deliver_on => deliver_on))
-      msg = FactoryBot.build(:miq_queue, :state => MiqQueue::STATE_DEQUEUE, :handler => @miq_server, :class_name => 'Storage', :method_name => 'scan_eligible_storages')
+      msg = FactoryBot.build(:miq_queue, :state => MiqQueue::STATE_DEQUEUE, :handler => miq_server, :class_name => 'Storage', :method_name => 'scan_eligible_storages')
       status, message, result = msg.deliver
 
       expect(status).to eq(MiqQueue::STATUS_RETRY)
@@ -122,7 +156,7 @@ RSpec.describe MiqQueue do
 
       allow(Storage).to receive(:scan_timer).and_raise(MiqException::MiqQueueRetryLater.new)
       msg.state   = MiqQueue::STATE_DEQUEUE
-      msg.handler = @miq_server
+      msg.handler = miq_server
       status, _message, _result = msg.deliver
 
       expect(status).to eq(MiqQueue::STATUS_RETRY)
@@ -133,7 +167,7 @@ RSpec.describe MiqQueue do
     it "sets last_exception on raised Exception" do
       ex = StandardError.new("something blewup")
       allow(MiqServer).to receive(:pidfile).and_raise(ex)
-      msg = FactoryBot.build(:miq_queue, :state => MiqQueue::STATE_DEQUEUE, :handler => @miq_server, :class_name => 'MiqServer', :method_name => 'pidfile')
+      msg = FactoryBot.build(:miq_queue, :state => MiqQueue::STATE_DEQUEUE, :handler => miq_server, :class_name => 'MiqServer', :method_name => 'pidfile')
       expect(msg._log).to receive(:error).with(/Error:/)
       expect(msg._log).to receive(:log_backtrace)
       status, message, _result = msg.deliver
@@ -147,7 +181,7 @@ RSpec.describe MiqQueue do
     it "sets the User.current_user" do
       user = FactoryBot.create(:user_with_group, :name => 'Freddy Kreuger')
       msg = FactoryBot.create(:miq_queue, :state       => MiqQueue::STATE_DEQUEUE,
-                                          :handler     => @miq_server,
+                                          :handler     => miq_server,
                                           :class_name  => 'Storage',
                                           :method_name => 'create_scan_task',
                                           :user_id     => user.id,
@@ -263,6 +297,7 @@ RSpec.describe MiqQueue do
     it "should return adjusted value" do
       expect(MiqQueue.priority(:max)).to eq(MiqQueue::MAX_PRIORITY)
       expect(MiqQueue.priority(:high)).to eq(MiqQueue::HIGH_PRIORITY)
+      expect(MiqQueue.priority(:medium)).to eq(MiqQueue::MEDIUM_PRIORITY)
       expect(MiqQueue.priority(:normal)).to eq(MiqQueue::NORMAL_PRIORITY)
       expect(MiqQueue.priority(:low)).to eq(MiqQueue::LOW_PRIORITY)
       expect(MiqQueue.priority(:min)).to eq(MiqQueue::MIN_PRIORITY)
@@ -296,10 +331,8 @@ RSpec.describe MiqQueue do
 
   context "deliver to queue" do
     before do
-      _, @miq_server, @zone = EvmSpecHelper.create_guid_miq_server_zone
-
       @t1 = Time.parse("Wed Apr 20 00:15:00 UTC 2011")
-      @msg = FactoryBot.create(:miq_queue, :zone => @zone.name, :role => "role1", :priority => 20, :created_on => @t1)
+      @msg = FactoryBot.create(:miq_queue, :zone => zone.name, :role => "role1", :priority => 20, :created_on => @t1)
     end
 
     it "should requeue a message with new message id" do
@@ -307,7 +340,7 @@ RSpec.describe MiqQueue do
         :class_name  => 'MiqAeEngine',
         :method_name => 'deliver',
         :args        => ['rq_message', 1, ["A", "B", "C"], 'AUTOMATION', 'gp', 'warn', 'automate message', 'ae_fsm_started', 'ae_state_started', 'ae_state_retries'],
-        :zone        => @zone.name,
+        :zone        => zone.name,
         :role        => 'automate',
         :msg_timeout => 60.minutes,
         :no_such_key => 'Does not exist'
@@ -328,7 +361,7 @@ RSpec.describe MiqQueue do
         :class_name  => 'MiqAeEngine',
         :method_name => 'deliver',
         :args        => ['rq_message', 1, ["A", "B", "C"], 'AUTOMATION', 'gp', 'warn', 'automate message', 'ae_fsm_started', 'ae_state_started', 'ae_state_retries'],
-        :zone        => @zone.name,
+        :zone        => zone.name,
         :role        => 'automate',
         :msg_timeout => 60.minutes
       }
@@ -350,9 +383,7 @@ RSpec.describe MiqQueue do
 
   context "worker" do
     before do
-      _, @miq_server, = EvmSpecHelper.create_guid_miq_server_zone
-
-      @worker = FactoryBot.create(:miq_ems_refresh_worker, :miq_server_id => @miq_server.id)
+      @worker = FactoryBot.create(:miq_ems_refresh_worker, :miq_server_id => miq_server.id)
       @msg = FactoryBot.create(:miq_queue, :state => MiqQueue::STATE_DEQUEUE, :task_id => "task123", :handler => @worker)
     end
 
@@ -367,9 +398,8 @@ RSpec.describe MiqQueue do
 
   context "#put" do
     before do
-      MiqRegion.seed
       Zone.seed
-      _, @miq_server, = EvmSpecHelper.create_guid_miq_server_zone
+      miq_server
     end
 
     it "should put one message on queue" do
@@ -603,9 +633,7 @@ RSpec.describe MiqQueue do
   end
 
   context "#put_unless_exists" do
-    before do
-      _, @miq_server, = EvmSpecHelper.create_guid_miq_server_zone
-    end
+    before { miq_server }
 
     it "should put a unique message on the queue if method_name is different" do
       msg1 = MiqQueue.put(
@@ -695,9 +723,7 @@ RSpec.describe MiqQueue do
   end
 
   context "#put_or_update" do
-    before do
-      _, @miq_server, = EvmSpecHelper.create_guid_miq_server_zone
-    end
+    before { miq_server }
 
     it "should respect hash updates in put_or_update for create" do
       MiqQueue.put_or_update(
@@ -732,13 +758,13 @@ RSpec.describe MiqQueue do
     end
 
     it "supports a Class object for the class name(deprecated)" do
-      expect(ActiveSupport::Deprecation).to receive(:warn).with(/use a String for class_name/, anything)
-      msg = MiqQueue.put_or_update(:class_name => MiqServer, :instance_id => @miq_server.id, :method_name => "my_zone")
+      expect(Vmdb::Deprecation).to receive(:warn).with(/use a String for class_name/, anything)
+      msg = MiqQueue.put_or_update(:class_name => MiqServer, :instance_id => miq_server.id, :method_name => "my_zone")
 
       status, message, result = msg.deliver
       expect(status).to eq(MiqQueue::STATUS_OK)
       expect(message).to eq("Message delivered successfully")
-      expect(result).to eq(@miq_server.my_zone)
+      expect(result).to eq(miq_server.my_zone)
     end
 
     it "should use args param to find messages on the queue" do
@@ -792,7 +818,7 @@ RSpec.describe MiqQueue do
 
     context "with a single server" do
       it "creates a queue item for the server" do
-        EvmSpecHelper.create_guid_miq_server_zone
+        EvmSpecHelper.local_miq_server
         MiqQueue.broadcast(queue_params)
 
         expect(queue_items.count).to eq(1)
@@ -813,7 +839,7 @@ RSpec.describe MiqQueue do
       end
 
       before do
-        EvmSpecHelper.create_guid_miq_server_zone
+        EvmSpecHelper.local_miq_server
         other_servers.last.role = other_role.name
       end
 
@@ -850,9 +876,7 @@ RSpec.describe MiqQueue do
   end
 
   describe ".unqueue" do
-    before do
-      EvmSpecHelper.create_guid_miq_server_zone
-    end
+    before { EvmSpecHelper.local_miq_server }
 
     # NOTE: default queue_name, state, zone
     it "should unqueue a message" do
@@ -974,6 +998,32 @@ RSpec.describe MiqQueue do
     end
   end
 
+  context ".queue_name_for_priority_service" do
+    it "returns generic queue for high priority work" do
+      expect(described_class.queue_name_for_priority_service('service', described_class::HIGH_PRIORITY)).to eq('generic')
+    end
+
+    it "returns generic queue for max priority work" do
+      expect(described_class.queue_name_for_priority_service('service', described_class::MAX_PRIORITY)).to eq('generic')
+    end
+
+    it "returns service queue for normal priority work" do
+      expect(described_class.queue_name_for_priority_service('service', described_class::NORMAL_PRIORITY)).to eq('service')
+    end
+
+    it "returns service queue for slightly higher than normal priority work" do
+      expect(described_class.queue_name_for_priority_service('service', described_class::NORMAL_PRIORITY - 10)).to eq('service')
+    end
+
+    it "returns service queue for slightly lower than high priority work" do
+      expect(described_class.queue_name_for_priority_service('service', described_class::HIGH_PRIORITY + 10)).to eq('service')
+    end
+
+    it "returns service queue for work with no priority specified" do
+      expect(described_class.queue_name_for_priority_service('service', nil)).to eq('service')
+    end
+  end
+
   describe ".messaging_client_options" do
     context "with ENV" do
       let(:env_vars) { ENV.to_h.merge("MESSAGING_HOSTNAME" => "server.example.com", "MESSAGING_PORT" => "9092", "MESSAGING_USERNAME" => "admin") }
@@ -985,12 +1035,13 @@ RSpec.describe MiqQueue do
           expect(YAML).not_to receive(:load_file).with(MiqQueue::MESSAGING_CONFIG_FILE)
 
           expect(MiqQueue.send(:messaging_client_options)).to eq(
-            :encoding => "json",
-            :host     => "server.example.com",
-            :password => "password",
-            :port     => 9092,
-            :protocol => nil,
-            :username => "admin"
+            :encoding       => "json",
+            :host           => "server.example.com",
+            :password       => "password",
+            :port           => 9092,
+            :protocol       => "Kafka",
+            :sasl_mechanism => "PLAIN",
+            :username       => "admin"
           )
         end
 
@@ -1001,12 +1052,33 @@ RSpec.describe MiqQueue do
 
           expect(ENV["MESSAGING_PASSWORD"]).to be_encrypted
           expect(MiqQueue.send(:messaging_client_options)).to eq(
-            :encoding => "json",
-            :host     => "server.example.com",
-            :password => "password",
-            :port     => 9092,
-            :protocol => nil,
-            :username => "admin"
+            :encoding       => "json",
+            :host           => "server.example.com",
+            :password       => "password",
+            :port           => 9092,
+            :protocol       => "Kafka",
+            :sasl_mechanism => "PLAIN",
+            :username       => "admin"
+          )
+        end
+
+        it "with SSL enabled" do
+          stub_const("ENV", env_vars.to_h.merge("MESSAGING_PASSWORD" => "password",
+                                                "MESSAGING_SSL_CA"   => "/path/root.crt"
+                                                ))
+
+          expect(YAML).not_to receive(:load_file).with(MiqQueue::MESSAGING_CONFIG_FILE)
+
+          expect(MiqQueue.send(:messaging_client_options)).to eq(
+            :encoding       => "json",
+            :host           => "server.example.com",
+            :password       => "password",
+            :port           => 9092,
+            :protocol       => "Kafka",
+            :username       => "admin",
+            :sasl_mechanism => "PLAIN",
+            :ssl            => true,
+            :ca_file        => "/path/root.crt"
           )
         end
       end
@@ -1014,47 +1086,49 @@ RSpec.describe MiqQueue do
       it "prefers settings from file if any ENV vars are missing" do
         stub_const("ENV", env_vars) # No password
 
+        allow(MiqQueue::MESSAGING_CONFIG_FILE).to receive(:file?).and_return(true)
         allow(YAML).to receive(:load_file).and_call_original
-        expect(YAML).to receive(:load_file).with(MiqQueue::MESSAGING_CONFIG_FILE).and_return("test" => {"hostname" => "kafka.example.com", "port" => 9092, "username" => "user", "password" => "password"})
+        expect(YAML).to receive(:load_file).with(MiqQueue::MESSAGING_CONFIG_FILE).and_return("test" => {"host" => "kafka.example.com", "port" => 9092, "protocol" => "Kafka", "encoding" => "json", "username" => "user", "password" => "password"})
 
         expect(MiqQueue.send(:messaging_client_options)).to eq(
           :encoding => "json",
           :host     => "kafka.example.com",
           :password => "password",
           :port     => 9092,
-          :protocol => nil,
+          :protocol => "Kafka",
           :username => "user"
         )
       end
     end
 
-    context "prefers settings from file when ENV vars are missing" do
+    context "with messaging.yml" do
       it "with clear text password" do
+        allow(MiqQueue::MESSAGING_CONFIG_FILE).to receive(:file?).and_return(true)
         allow(YAML).to receive(:load_file).and_call_original
-        expect(YAML).to receive(:load_file).with(MiqQueue::MESSAGING_CONFIG_FILE).and_return("test" => {"hostname" => "kafka.example.com", "port" => 9092, "username" => "user", "password" => "password"})
-
-        expect(MiqQueue.send(:messaging_client_options)).to eq(
-          :encoding => "json",
-          :host     => "kafka.example.com",
-          :password => "password",
-          :port     => 9092,
-          :protocol => nil,
-          :username => "user"
-        )
-      end
-
-      it "with encrypted password" do
-        allow(YAML).to receive(:load_file).and_call_original
-        expect(YAML).to receive(:load_file).with(MiqQueue::MESSAGING_CONFIG_FILE).and_return("test" => {"hostname" => "kafka.example.com", "port" => 9092, "username" => "user", "password" => ManageIQ::Password.encrypt("password"), "sasl.password" => ManageIQ::Password.encrypt("password")})
+        expect(YAML).to receive(:load_file).with(MiqQueue::MESSAGING_CONFIG_FILE).and_return("test" => {"host" => "kafka.example.com", "port" => 9092, "protocol" => "Kafka", "encoding" => "json", "sasl.username" => "user", "sasl.password" => "password"})
 
         expect(MiqQueue.send(:messaging_client_options)).to eq(
           :encoding        => "json",
           :host            => "kafka.example.com",
-          :password        => "password",
           :port            => 9092,
-          :protocol        => nil,
-          :"sasl.password" => "password",
-          :username        => "user"
+          :protocol        => "Kafka",
+          :"sasl.username" => "user",
+          :"sasl.password" => "password"
+        )
+      end
+
+      it "with encrypted password" do
+        allow(MiqQueue::MESSAGING_CONFIG_FILE).to receive(:file?).and_return(true)
+        allow(YAML).to receive(:load_file).and_call_original
+        expect(YAML).to receive(:load_file).with(MiqQueue::MESSAGING_CONFIG_FILE).and_return("test" => {"host" => "kafka.example.com", "port" => 9092, "protocol" => "Kafka", "encoding" => "json", "sasl.username" => "user", "sasl.password" => ManageIQ::Password.encrypt("password")})
+
+        expect(MiqQueue.send(:messaging_client_options)).to eq(
+          :encoding        => "json",
+          :host            => "kafka.example.com",
+          :port            => 9092,
+          :protocol        => "Kafka",
+          :"sasl.username" => "user",
+          :"sasl.password" => "password"
         )
       end
     end

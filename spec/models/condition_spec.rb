@@ -1,5 +1,5 @@
 RSpec.describe Condition do
-  describe ".subst" do
+  describe ".subst (private)" do
     context "evaluation of virtual custom attributes from left and right side" do
       let(:custom_attribute_1)         { FactoryBot.create(:custom_attribute, :name => "attr_1", :value => 20) }
       let(:custom_attribute_2)         { FactoryBot.create(:custom_attribute, :name => "attr_2", :value => 30) }
@@ -21,17 +21,17 @@ RSpec.describe Condition do
       end
 
       it "evaluates custom attributes on both sides" do
-        condition_to_evaluate = Condition.subst(@filter_1.to_ruby(nil), vm)
+        condition_to_evaluate = Condition.send(:subst, @filter_1.to_ruby(nil), vm)
         expect(condition_to_evaluate).to eq('20 > 30')
       end
 
       it "evaluates custom attribute on right side and integer column of VmOrTemplate on left side" do
-        condition_to_evaluate = Condition.subst(@filter_2.to_ruby(nil), vm)
+        condition_to_evaluate = Condition.send(:subst, @filter_2.to_ruby(nil), vm)
         expect(condition_to_evaluate).to eq('10 > 30')
       end
 
       it "evaluates custom attribute on left side and integer column of VmOrTemplate on right side" do
-        condition_to_evaluate = Condition.subst(@filter_3.to_ruby(nil), vm)
+        condition_to_evaluate = Condition.send(:subst, @filter_3.to_ruby(nil), vm)
         expect(condition_to_evaluate).to eq('20 > 10')
       end
     end
@@ -60,84 +60,167 @@ RSpec.describe Condition do
       end
 
       it "valid expression" do
-        expr = "<find><search><value ref=emscluster, type=boolean>/virtual/vms/active</value> == 'false'</search><check mode=count><count> >= 2</check></find>"
-        expect(Condition.subst(expr, cluster)).to be_truthy
+        filter = MiqExpression.new(
+          "FIND" => {
+            "search"     => {"=" => {"field" => "EmsCluster.vms-active", "value" => false}},
+            "checkcount" => {">=" => {"field" => "EmsCluster.vms-active", "value" => 2}}
+          }
+        )
+        expect(Condition.send(:subst, filter.to_ruby, cluster)).to be_truthy
       end
 
       it "has_one support" do
-        expr = "<find><search><value ref=vm, type=string>/virtual/host/name</value> == 'XXX'</search><check mode=count><count> == 1</check></find>"
-        expect(Condition.subst(expr, @vm1)).to be_truthy
+        filter = MiqExpression.new(
+          "FIND" => {
+            "search"     => {"=" => {"field" => "Vm.host-name", "value" => "XXX"}},
+            "checkcount" => {"=" => {"field" => "Vm.host-name", "value" => 1}}
+          }
+        )
+        expect(Condition.send(:subst, filter.to_ruby, @vm1)).to be_truthy
       end
 
       it "invalid expression should not raise security error because it is now parsed and not evaluated" do
-        expr = "<find><search><value ref=emscluster, type=boolean>/virtual/vms/active</value> == 'false'</search><check mode=count><count> >= 2; system('ls /etc')</check></find>"
-        expect { Condition.subst(expr, cluster) }.not_to raise_error
+        # TODO: since ruby no longer has $SAFE, no exception will get thrown (even if this injection attack were still a problem)
+        filter = MiqExpression.new(
+          "FIND" => {
+            "search"     => {"=" => {"field" => "EmsCluster.vms-active", "value" => false}},
+            "checkcount" => {">=" => {"field" => "Vm.host-name", "value" => "2; system('ls /etc')"}}
+          }
+        )
+        expect { Condition.send(:subst, filter.to_ruby, cluster) }.not_to raise_error
       end
 
       it "tests all allowed operators in find/check expression clause" do
-        expr = "<find><search><value ref=emscluster, type=boolean>/virtual/vms/active</value> == 'false'</search><check mode=count><count> == 0</check></find>"
-        expect(Condition.subst(expr, cluster)).to eq('false')
+        filter = MiqExpression.new(
+          "FIND" => {
+            "search"     => {"=" => {"field" => "EmsCluster.vms-active", "value" => false}},
+            "checkcount" => {"=" => {"field" => "EmsCluster.vms-active", "value" => 0}}
+          }
+        )
+        expect(Condition.send(:subst, filter.to_ruby, cluster)).to eq('false')
 
-        expr = "<find><search><value ref=emscluster, type=boolean>/virtual/vms/active</value> == 'false'</search><check mode=count><count> > 0</check></find>"
-        expect(Condition.subst(expr, cluster)).to eq('true')
+        filter = MiqExpression.new(
+          "FIND" => {
+            "search"     => {"=" => {"field" => "EmsCluster.vms-active", "value" => false}},
+            "checkcount" => {">" => {"field" => "EmsCluster.vms-active", "value" => 0}}
+          }
+        )
+        expect(Condition.send(:subst, filter.to_ruby, cluster)).to eq('true')
 
-        expr = "<find><search><value ref=emscluster, type=boolean>/virtual/vms/active</value> == 'false'</search><check mode=count><count> >= 0</check></find>"
-        expect(Condition.subst(expr, cluster)).to eq('true')
+        filter = MiqExpression.new(
+          "FIND" => {
+            "search"     => {"=" => {"field" => "EmsCluster.vms-active", "value" => false}},
+            "checkcount" => {">=" => {"field" => "EmsCluster.vms-active", "value" => 0}}
+          }
+        )
+        expect(Condition.send(:subst, filter.to_ruby, cluster)).to eq('true')
 
-        expr = "<find><search><value ref=emscluster, type=boolean>/virtual/vms/active</value> == 'true'</search><check mode=count><count> < 0</check></find>"
-        expect(Condition.subst(expr, cluster)).to eq('false')
+        filter = MiqExpression.new(
+          "FIND" => {
+            "search"     => {"=" => {"field" => "EmsCluster.vms-active", "value" => true}},
+            "checkcount" => {"<" => {"field" => "EmsCluster.vms-active", "value" => 0}}
+          }
+        )
+        expect(Condition.send(:subst, filter.to_ruby, cluster)).to eq('false')
 
-        expr = "<find><search><value ref=emscluster, type=boolean>/virtual/vms/active</value> == 'false'</search><check mode=count><count> <= 0</check></find>"
-        expect(Condition.subst(expr, cluster)).to eq('false')
+        filter = MiqExpression.new(
+          "FIND" => {
+            "search"     => {"=" => {"field" => "EmsCluster.vms-active", "value" => false}},
+            "checkcount" => {"<=" => {"field" => "EmsCluster.vms-active", "value" => 0}}
+          }
+        )
+        expect(Condition.send(:subst, filter.to_ruby, cluster)).to eq('false')
 
-        expr = "<find><search><value ref=emscluster, type=boolean>/virtual/vms/active</value> == 'false'</search><check mode=count><count> != 0</check></find>"
-        expect(Condition.subst(expr, cluster)).to eq('true')
+        filter = MiqExpression.new(
+          "FIND" => {
+            "search"     => {"=" => {"field" => "EmsCluster.vms-active", "value" => false}},
+            "checkcount" => {"!=" => {"field" => "EmsCluster.vms-active", "value" => 0}}
+          }
+        )
+        expect(Condition.send(:subst, filter.to_ruby, cluster)).to eq('true')
       end
 
       it "rejects and expression with an illegal operator" do
-        expr = "<find><search><value ref=emscluster, type=boolean>/virtual/vms/active</value> == 'false'</search><check mode=count><count> !! 0</check></find>"
-        expect { expect(Condition.subst(expr, cluster)).to eq('false') }.to raise_error(RuntimeError, "Illegal operator, '!!'")
+        expect do
+          filter = MiqExpression.new(
+            "FIND" => {
+              "search"     => {"=" => {"field" => "EmsCluster.vms-active", "value" => false}},
+              "checkcount" => {"!!" => {"field" => "EmsCluster.vms-active", "value" => 0}}
+            }
+          )
+          Condition.send(:subst, filter.to_ruby, cluster)
+        end.to raise_error(RuntimeError, _("operator '!!' is not supported"))
       end
     end
 
     context "expression with <registry>" do
-      let(:vm) { FactoryBot.create(:vm_vmware, :registry_items => [reg_num, @reg_string]) }
-      let(:reg_num) { FactoryBot.create(:registry_item, :name => "HKLM\\SOFTWARE\\WindowsFirewall : EnableFirewall", :data => 0) }
-      before do
-        @reg_string = FactoryBot.create(:registry_item, :name => "HKLM\\SOFTWARE\\Microsoft\\Ole : EnableDCOM", :data => 'y')
-      end
+      let(:vm) { FactoryBot.create(:vm_vmware, :registry_items => [reg_num, reg_string]) }
+      let(:reg_num) { FactoryBot.create(:registry_item, :name => "HKLM\\SOFTWARE\\WindowsFirewall : EnableFirewall", :value_name => "EnableFirewall", :data => 0) }
+      let(:reg_string) { FactoryBot.create(:registry_item, :name => "HKLM\\SOFTWARE\\Microsoft\\Ole : EnableDCOM", :value_name => "EnableDCOM", :data => 'y') }
 
       it "string type registry key data is single quoted" do
-        expr = "<registry>#{@reg_string.name}</registry>"
-        expect(Condition.subst(expr, vm)).to eq('"y"')
+        filter = MiqExpression.new("=" => {"regkey" => reg_string.key_name, "regval" => reg_string.value_name, "value" => "y"})
+        expect(Condition.send(:subst, filter.to_ruby, vm)).to eq('"y" == "y"')
       end
 
       it "numerical type registry key data is single quoted" do
-        expr = "<registry>#{reg_num.name}</registry>"
-        expect(Condition.subst(expr, vm)).to eq('"0"')
+        filter = MiqExpression.new("=" => {"regkey" => reg_num.key_name, "regval" => reg_num.value_name, "value" => "0"})
+        expect(Condition.send(:subst, filter.to_ruby, vm)).to eq('"0" == "0"')
       end
     end
 
     it "does not change the scope for taggings when passed a Tag" do
       tag = FactoryBot.create(:tag, :name => "/managed/foo")
       vm = FactoryBot.create(:vm_vmware)
-      expr = "<value ref=tag, type=text>/virtual/name</value> == \"/managed/foo\""
-
-      described_class.subst(expr, tag)
+      filter = MiqExpression.new("=" => {"field" => "Tag-name", "value" => "/managed/foo"})
+      described_class.send(:subst, filter.to_ruby, tag)
       vm.tag_add("foo", :ns => "/managed")
       vm.reload
 
       expect(vm.tags).to eq([tag])
     end
+
+    it "should escape strings" do
+      filter = MiqExpression.new({"INCLUDES" => {"field" => "Vm.registry_items-data", "value" => "$foo"}})
+      expect(filter.to_ruby).to eq("<value ref=vm, type=text>/virtual/registry_items/data</value> =~ /\\$foo/")
+
+      data = {"registry_items.data" => "C:\\Documents and Users\\O'Neill, April\\", "/virtual/registry_items/data" => "C:\\Documents and Users\\O'Neill, April\\"}
+      expect(Condition.send(:subst, filter.to_ruby, data)).to eq("\"C:\\\\Documents and Users\\\\O'Neill, April\\\\\" =~ /\\$foo/")
+    end
+
+    context "when context_type is 'hash'" do
+      let(:data) do
+        {
+          "name"                            => "VM_1",
+          "guest_applications.version"      => "3.1.2.7193",
+          "guest_applications.release"      => nil,
+          "guest_applications.vendor"       => "VMware, Inc.", "id" => 9,
+          "guest_applications.name"         => "VMware Tools",
+          "guest_applications.package_name" => nil
+        }
+      end
+
+      it "should test context hash with EQUAL" do
+        filter = MiqExpression.new({"=" => {"field" => "Vm.guest_applications-name", "value" => "VMware Tools"}}, "hash")
+        expect(filter.to_ruby).to eq("<value type=string>guest_applications.name</value> == \"VMware Tools\"")
+        expect(Condition.send(:subst, filter.to_ruby, data)).to eq("\"VMware Tools\" == \"VMware Tools\"")
+      end
+
+      it "should test context hash with REGULAR EXPRESSION MATCHES" do
+        filter = MiqExpression.new({"REGULAR EXPRESSION MATCHES" => {"field" => "Vm.guest_applications-vendor", "value" => "/^[^.]*ware.*$/"}}, "hash")
+        expect(filter.to_ruby).to eq("<value type=string>guest_applications.vendor</value> =~ /^[^.]*ware.*$/")
+        expect(Condition.send(:subst, filter.to_ruby, data)).to eq('"VMware, Inc." =~ /^[^.]*ware.*$/')
+      end
+    end
   end
 
   describe ".do_eval" do
     it "detects true" do
-      expect(Condition.do_eval("true")).to be_truthy
+      expect(Condition.send(:do_eval, "true")).to be_truthy
     end
 
     it "detects false" do
-      expect(Condition.do_eval("false")).not_to be_truthy
+      expect(Condition.send(:do_eval, "false")).not_to be_truthy
     end
   end
 

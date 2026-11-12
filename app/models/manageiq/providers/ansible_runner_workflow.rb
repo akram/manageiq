@@ -1,7 +1,10 @@
 class ManageIQ::Providers::AnsibleRunnerWorkflow < Job
   def self.create_job(env_vars, extra_vars, role_or_playbook_options,
-                      hosts = ["localhost"], credentials = [],
+                      hosts = nil, credentials = nil,
                       timeout: 1.hour, poll_interval: 1.second, verbosity: 0, become_enabled: false)
+    hosts       ||= %w[localhost]
+    credentials ||= []
+
     super(role_or_playbook_options.merge(
       :become_enabled => become_enabled,
       :credentials    => credentials,
@@ -81,11 +84,11 @@ class ManageIQ::Providers::AnsibleRunnerWorkflow < Job
     end
   end
 
-  def queue_signal(*args, deliver_on: nil)
+  def queue_signal(*args, deliver_on: nil, msg_timeout: nil)
     role     = options[:role] || "ems_operations"
     priority = options[:priority] || MiqQueue::NORMAL_PRIORITY
 
-    super(*args, :priority => priority, :role => role, :deliver_on => deliver_on, :server_guid => MiqServer.my_server.guid)
+    super(*args, :msg_timeout => msg_timeout, :priority => priority, :role => role, :deliver_on => deliver_on, :server_guid => MiqServer.my_server.guid)
   end
 
   def deliver_on
@@ -130,6 +133,7 @@ class ManageIQ::Providers::AnsibleRunnerWorkflow < Job
 
     if monitor.running?
       return handle_runner_timeout(monitor) if job_timeout_exceeded?
+
       queue_signal(:poll_runner, :deliver_on => deliver_on)
     else
       process_runner_result(monitor.response)

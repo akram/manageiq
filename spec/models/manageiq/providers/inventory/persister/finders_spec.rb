@@ -11,7 +11,7 @@ RSpec.describe ManageIQ::Providers::Inventory::Persister do
   ######################################################################################################################
   #
   before do
-    @ems = FactoryBot.create(:ems_cloud)
+    @ems = FactoryBot.create(:ems_cloud) # this is used to populate parent
   end
 
   let(:persister) { create_persister }
@@ -49,34 +49,18 @@ RSpec.describe ManageIQ::Providers::Inventory::Persister do
   it "raises an exception passing bad secondsry index used by finder" do
     expected_error = "Finder has missing keys for index :by_name, missing indexes are: [:name]"
     expect do
-      persister.vms.lazy_find({:names => "name"}, {:ref => :by_name})
+      persister.vms.lazy_find({:names => "name"}, :ref => :by_name)
     end.to(raise_error(expected_error))
 
     expected_error = "Finder has missing keys for index :by_uid_ems_and_name, missing indexes are: [:uid_ems, :name]"
     expect do
-      persister.vms.lazy_find({:names => "name", :uida_ems => "uid_ems"}, {:ref => :by_uid_ems_and_name})
+      persister.vms.lazy_find({:names => "name", :uida_ems => "uid_ems"}, :ref => :by_uid_ems_and_name)
     end.to(raise_error(expected_error))
-  end
-
-  it "checks that we recognize first argument vs passed kwargs" do
-    # This passes nicely
-    lazy_vm = persister.vms.lazy_find({:name => "name"}, :ref => :by_name)
-    expect(lazy_vm.reference.full_reference).to eq(:name => "name")
-
-    # TODO(lsmola) But this fails, since it takes the whole hash as 1st arg, it should correctly raise invalid format
-    expected_error = "Finder has missing keys for index :manager_ref, missing indexes are: [:ems_ref]"
-    expect do
-      persister.vms.lazy_find(:name => "name", :ref => :by_name)
-    end.to(raise_error(expected_error))
-
-    # TODO(lsmola) And this doesn't fail, but the :key is silently ignored, it should also raise invalid format
-    lazy_vm = persister.vms.lazy_find(:ems_ref => "ems_ref_1", :key => :name)
-    expect(lazy_vm.reference.full_reference).to eq(:ems_ref => "ems_ref_1", :key => :name)
   end
 
   it "checks passing more keys to index passes just fine" do
     # There is not need to force exact match as long as all keys of the index are passed
-    vm_lazy_1 = persister.vms.lazy_find({:name => "name", :uid_ems => "uid_ems", :ems_ref => "ems_ref"}, {:ref => :by_uid_ems_and_name})
+    vm_lazy_1 = persister.vms.lazy_find({:name => "name", :uid_ems => "uid_ems", :ems_ref => "ems_ref"}, :ref => :by_uid_ems_and_name)
 
     expect(vm_lazy_1.reference.full_reference).to eq(:name => "name", :uid_ems => "uid_ems", :ems_ref => "ems_ref")
     expect(vm_lazy_1.ref).to eq(:by_uid_ems_and_name)
@@ -149,7 +133,7 @@ RSpec.describe ManageIQ::Providers::Inventory::Persister do
 
     persister.vms.build(vm_data(1))
 
-    expected_error = "Wrong index for key :vm_or_template, all references under this index must point to default :ref"\
+    expected_error = "Wrong index for key :vm_or_template, all references under this index must point to default :ref" \
                      " called :manager_ref. Any other :ref is not valid. This applies also to nested lazy links."
     expect do
       persister.hardwares.build(hardware_data(1, :vm_or_template => vm_lazy))
@@ -163,7 +147,7 @@ RSpec.describe ManageIQ::Providers::Inventory::Persister do
 
     persister.vms.build(vm_data(1))
 
-    expected_error = "Wrong index for key :hardware, all references under this index must point to default :ref called"\
+    expected_error = "Wrong index for key :hardware, all references under this index must point to default :ref called" \
                      " :manager_ref. Any other :ref is not valid. This applies also to nested lazy links."
     expect do
       persister.disks.build(disk_data(1, :hardware => hardware_lazy))

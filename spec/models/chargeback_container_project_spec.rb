@@ -1,7 +1,7 @@
 RSpec.describe ChargebackContainerProject do
   include Spec::Support::ChargebackHelper
 
-  let(:base_options) { {:interval_size => 2, :end_interval_offset => 0, :ext_options => {:tz => 'UTC'} } }
+  let(:base_options) { {:interval_size => 2, :end_interval_offset => 0, :ext_options => {:tz => 'UTC'}} }
   let(:hourly_rate) { 0.01 }
   let(:starting_date) { Time.parse('2012-09-01 23:59:59Z').utc }
   let(:ts) { starting_date.in_time_zone(Metric::Helper.get_time_zone(base_options[:ext_options])) }
@@ -36,13 +36,12 @@ RSpec.describe ChargebackContainerProject do
   end
 
   before do
-    MiqRegion.seed
     ChargebackRateDetailMeasure.seed
     ChargeableField.seed
     MiqEnterprise.seed
     ManageIQ::Showback::InputMeasure.seed
 
-    EvmSpecHelper.create_guid_miq_server_zone
+    EvmSpecHelper.local_miq_server
     @project = FactoryBot.create(:container_project, :name => "my project", :ext_management_system => ems,
                                   :created_on => month_beginning)
 

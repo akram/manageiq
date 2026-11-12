@@ -132,7 +132,7 @@ RSpec.describe "Service Retirement Management" do
       @stack.mark_retired
       @stack.reload
       expect(@stack.retired).to be_truthy
-      expect(@stack.retires_on).to be_between(Time.zone.now - 1.hour, Time.zone.now + 1.second)
+      expect(@stack.retires_on).to be_between(1.hour.ago, 1.second.from_now)
       expect(@stack.retirement_state).to eq("retired")
     end
 
@@ -189,7 +189,7 @@ RSpec.describe "Service Retirement Management" do
         :type                => "OrchestrationStack",
       }
 
-      expect(MiqEvent).to receive(:raise_evm_event).with(@stack, event_name, event_hash, :zone => @zone.name)
+      expect(MiqEvent).to receive(:raise_evm_event).with(@stack, event_name, event_hash, {:zone => @zone.name})
       @stack.raise_retirement_event(event_name)
     end
 
@@ -201,7 +201,7 @@ RSpec.describe "Service Retirement Management" do
         :type                => "OrchestrationStack",
       }
 
-      expect(MiqEvent).to receive(:raise_evm_event).with(@stack, event_name, event_hash, :zone => @zone.name, :user_id => user.id, :group_id => user.current_group.id, :tenant_id => user.current_tenant.id)
+      expect(MiqEvent).to receive(:raise_evm_event).with(@stack, event_name, event_hash, {:zone => @zone.name, :user_id => user.id, :group_id => user.current_group.id, :tenant_id => user.current_tenant.id})
       @stack.raise_retirement_event(event_name, user.userid)
     end
 

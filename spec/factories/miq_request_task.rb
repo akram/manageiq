@@ -8,10 +8,10 @@ FactoryBot.define do
   factory :miq_provision,      :parent => :miq_provision_task, :class => "MiqProvision"
 
   # Infra
-  factory :miq_provision_microsoft,      :parent => :miq_provision,        :class => "ManageIQ::Providers::Microsoft::InfraManager::Provision"
   factory :miq_provision_redhat,         :parent => :miq_provision,        :class => "ManageIQ::Providers::Redhat::InfraManager::Provision"
   factory :miq_provision_redhat_via_iso, :parent => :miq_provision_redhat, :class => "ManageIQ::Providers::Redhat::InfraManager::ProvisionViaIso"
   factory :miq_provision_redhat_via_pxe, :parent => :miq_provision_redhat, :class => "ManageIQ::Providers::Redhat::InfraManager::ProvisionViaPxe"
+  factory :miq_provision_ovirt,          :parent => :miq_provision,        :class => "ManageIQ::Providers::Ovirt::InfraManager::Provision"
   factory :miq_provision_vmware,         :parent => :miq_provision,        :class => "ManageIQ::Providers::Vmware::InfraManager::Provision" do
     trait :clone_to_vm do
       request_type { "clone_to_vm" }
@@ -37,7 +37,10 @@ FactoryBot.define do
   factory :automation_task, :parent => :miq_request_task, :class => "AutomationTask"
 
   # Services
-  factory :service_reconfigure_task,        :parent => :miq_request_task, :class => "ServiceReconfigureTask"
+  factory :service_reconfigure_task,        :parent => :miq_request_task, :class => "ServiceReconfigureTask" do
+    request_type { 'service_reconfigure' }
+  end
+
   factory :service_template_provision_task, :parent => :miq_request_task, :class => "ServiceTemplateProvisionTask" do
     state        { 'pending' }
     request_type { 'clone_to_service' }

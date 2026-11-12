@@ -5,11 +5,15 @@ if ENV['CI']
 end
 
 ENV["RAILS_ENV"] ||= 'test'
-require File.expand_path("../../config/environment", __FILE__)
+require File.expand_path('../config/environment', __dir__)
 require 'rspec/rails'
 require 'rspec/mocks'
 require 'vcr'
 require 'cgi'
+
+# Set up ENGINE_ROOT if running tests from within a plugin.
+require_relative 'support/prepare_engine_root'
+Spec::Support::PrepareEngineRoot.setup
 
 # Fail tests that try to include stuff in `main`
 require_relative 'support/test_contamination'
@@ -33,7 +37,16 @@ RSpec.configure do |config|
     c.syntax = :expect
   end
 
-  config.fixture_path = "#{::Rails.root}/spec/fixtures"
+  config.before do
+    # TODO: The following locations YAML load the Ruport objects, see if we can avoid serializing them here.
+    # rspec ./spec/models/miq_report_result_spec.rb:8 # MiqReportResult #_async_generate_result
+    # rspec ./spec/models/miq_report_result_spec.rb:111 # MiqReportResult persisting generated report results should save the original report metadata and the generated table as a binary blob
+    # rspec ./spec/models/miq_report/generator_spec.rb:275 # MiqReport::Generator sorting handles sort columns with nil values properly, when column is string
+    # rspec ./spec/models/service_spec.rb:510 # Service Chargeback report generation #chargeback_report returns chargeback report
+    YamlPermittedClasses.app_yaml_permitted_classes |= [Ruport::Data::Record, Ruport::Data::Table]
+  end
+
+  config.file_fixture_path = "#{Rails.root.join("spec/fixtures")}"
   config.use_transactional_fixtures = true
   config.use_instantiated_fixtures  = false
 
@@ -55,6 +68,15 @@ RSpec.configure do |config|
   #   EvmSpecHelper.log_ruby_object_usage
   # end
 
+  # everything requires a region
+  config.before(:suite) do
+    MiqRegion.seed
+  end
+
+  config.after(:suite) do
+    MiqRegion.delete_all
+  end
+
   config.before do
     EmsRefresh.try(:debug_failures=, true)
   end
@@ -63,7 +85,7 @@ RSpec.configure do |config|
     EvmSpecHelper.clear_caches { example.run }
   end
 
-  if ENV["TRAVIS"] && ENV["TEST_SUITE"] == "vmdb"
+  if ENV["CI"] && ENV["TEST_SUITE"] == "vmdb"
     config.before(:suite) do
       require Rails.root.join("spec/coverage_helper.rb")
     end

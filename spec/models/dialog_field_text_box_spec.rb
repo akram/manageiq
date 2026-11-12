@@ -44,7 +44,6 @@ RSpec.describe DialogFieldTextBox do
       context "when show_refresh_button is false" do
         let(:show_refresh_button) { false }
 
-
         context "when load_values_on_init is true" do
           let(:load_values_on_init) { true }
 
@@ -109,7 +108,7 @@ RSpec.describe DialogFieldTextBox do
   end
 
   context "dialog field text box with protected field" do
-    let(:df) { FactoryBot.build(:dialog_field_text_box, :label   => 'test field', :name    => 'test field', :options => {:protected => true}) }
+    let(:df) { FactoryBot.build(:dialog_field_text_box, :label => 'test field', :name => 'test field', :options => {:protected => true}) }
 
     it "#protected?" do
       expect(df).to be_protected
@@ -282,14 +281,15 @@ RSpec.describe DialogFieldTextBox do
     let(:dialog_field) { described_class.new }
     let(:automate_hash) do
       {
-        "data_type"      => "datatype",
-        "value"          => value,
-        "protected"      => true,
-        "description"    => "description",
-        "required"       => true,
-        "read_only"      => true,
-        "validator_type" => "regex",
-        "validator_rule" => "rule"
+        "data_type"         => "datatype",
+        "value"             => value,
+        "protected"         => true,
+        "description"       => "description",
+        "required"          => true,
+        "read_only"         => true,
+        "validator_type"    => "regex",
+        "validator_rule"    => "rule",
+        "validator_message" => "message"
       }
     end
 
@@ -320,6 +320,10 @@ RSpec.describe DialogFieldTextBox do
 
       it "sets the validator rule" do
         expect(dialog_field.validator_rule).to eq("rule")
+      end
+
+      it "sets the validator message" do
+        expect(dialog_field.validator_message).to eq("message")
       end
     end
 

@@ -3,7 +3,7 @@ class ExtManagementSystem < ApplicationRecord
   include SupportsFeatureMixin
   include ExternalUrlMixin
   include VerifyCredentialsMixin
-  include_concern "SupportsAttribute"
+  include SupportsAttribute
 
   hide_attribute "aggregate_memory" # better to use total_memory (coin toss - they're similar)
 
@@ -68,7 +68,7 @@ class ExtManagementSystem < ApplicationRecord
     end
   end
 
-  belongs_to :provider
+  belongs_to :provider, :autosave => true
   has_many :child_managers, :class_name => 'ExtManagementSystem', :foreign_key => 'parent_ems_id'
 
   belongs_to :tenant
@@ -85,7 +85,10 @@ class ExtManagementSystem < ApplicationRecord
   has_many :hardwares,         :through => :vms_and_templates
   has_many :networks,          :through => :hardwares
   has_many :disks,             :through => :hardwares
-  has_many :physical_servers,  :foreign_key => :ems_id, :inverse_of => :ext_management_system, :dependent => :destroy
+  has_many :physical_servers,         :foreign_key => :ems_id, :inverse_of => :ext_management_system, :dependent => :destroy
+  has_many :physical_server_profiles, :foreign_key => :ems_id, :inverse_of => :ext_management_system, :dependent => :destroy
+  has_many :physical_server_profile_templates, :foreign_key => :ems_id, :inverse_of => :ext_management_system, :dependent => :destroy
+  has_many :placement_groups,         :foreign_key => :ems_id, :inverse_of => :ext_management_system, :dependent => :destroy
 
   has_many :vm_and_template_labels, :through => :vms_and_templates, :source => :labels
   # Only taggings mapped from labels, excluding user-assigned tags.
@@ -103,8 +106,6 @@ class ExtManagementSystem < ApplicationRecord
   has_many :customization_scripts, :foreign_key => "manager_id", :dependent => :destroy, :inverse_of => :ext_management_system
   has_many :cloud_subnets, :foreign_key => :ems_id, :dependent => :destroy
 
-  has_one  :iso_datastore, :foreign_key => "ems_id", :dependent => :destroy, :inverse_of => :ext_management_system
-
   belongs_to :zone
   belongs_to :zone_before_pause, :class_name => "Zone", :inverse_of => :paused_ext_management_systems # used for maintenance mode
 
@@ -116,7 +117,6 @@ class ExtManagementSystem < ApplicationRecord
   has_many :ems_events, -> { order("timestamp") }, :class_name => "EmsEvent", :foreign_key => "ems_id", :inverse_of => :ext_management_system
   has_many :policy_events, -> { order("timestamp") }, :class_name => "PolicyEvent", :foreign_key => "ems_id"
   has_many :generated_events, -> { order("timestamp") }, :class_name => "EmsEvent", :foreign_key => "generating_ems_id", :inverse_of => :generating_ems
-  has_many :blacklisted_events, :foreign_key => "ems_id", :dependent => :destroy, :inverse_of => :ext_management_system
 
   has_many :vms_and_templates_advanced_settings, :through => :vms_and_templates, :source => :advanced_settings
   has_many :service_instances, :foreign_key => :ems_id, :dependent => :destroy, :inverse_of => :ext_management_system
@@ -125,6 +125,8 @@ class ExtManagementSystem < ApplicationRecord
 
   has_many :ems_licenses,   :foreign_key => :ems_id, :dependent => :destroy, :inverse_of => :ext_management_system
   has_many :ems_extensions, :foreign_key => :ems_id, :dependent => :destroy, :inverse_of => :ext_management_system
+
+  has_many :iso_images, :through => :storages
 
   validates :name,     :presence => true, :uniqueness_when_changed => {:scope => [:tenant_id]}
   validates :hostname, :presence => true, :if => :hostname_required?
@@ -139,34 +141,7 @@ class ExtManagementSystem < ApplicationRecord
 
   serialize :options
 
-  supports_not :catalog
-  supports_not :add_host_initiator
-  supports_not :add_storage
-  supports_not :add_volume_mapping
-  supports_not :admin_ui
-  supports_not :assume_role
-  supports_not :block_storage
-  supports_not :change_password
-  supports_not :cloud_object_store_container_create
-  supports_not :cloud_subnet_create
-  supports_not :cloud_tenant_mapping
-  supports_not :cloud_volume_create
-  supports_not :console
-  supports_not :discovery
-  supports_not :label_mapping
-  supports_not :metrics
-  supports_not :object_storage
-  supports_not :provisioning
-  supports_not :publish
-  supports_not :reconfigure_disks
   supports     :refresh_ems
-  supports_not :regions
-  supports_not :smartstate_analysis
-  supports_not :storage_manager
-  supports_not :streaming_refresh
-  supports_not :swift_service
-  supports_not :vm_import
-  supports_not :volume_availability_zones
 
   def edit_with_params(params, endpoints, authentications)
     tap do |ems|
@@ -188,6 +163,7 @@ class ExtManagementSystem < ApplicationRecord
   def hostname_uniqueness_valid?
     return unless hostname_required?
     return unless hostname.present? # Presence is checked elsewhere
+
     # check uniqueness per provider type
 
     existing_hostnames = (self.class.all - [self]).map(&:hostname).compact.map(&:downcase)
@@ -214,7 +190,7 @@ class ExtManagementSystem < ApplicationRecord
 
   # validation - Zone cannot be maintenance_zone when enabled == true
   def validate_zone_not_maintenance_when_ems_enabled?
-    if enabled? && zone.present? && zone == Zone.maintenance_zone
+    if enabled? && zone&.maintenance?
       errors.add(:zone, N_("cannot be the maintenance zone when provider is active"))
     end
   end
@@ -223,12 +199,9 @@ class ExtManagementSystem < ApplicationRecord
   include UuidMixin
   include EmsRefresh::Manager
   include TenancyMixin
-  include AvailabilityMixin
   include SupportsFeatureMixin
   include ComplianceMixin
   include CustomAttributeMixin
-
-  after_destroy { |record| $log.info("MIQ(ExtManagementSystem.after_destroy) Removed EMS [#{record.name}] id [#{record.id}]") }
 
   acts_as_miq_taggable
 
@@ -252,6 +225,8 @@ class ExtManagementSystem < ApplicationRecord
            :hostname=,
            :port,
            :port=,
+           :url,
+           :url=,
            :security_protocol,
            :security_protocol=,
            :verify_ssl,
@@ -261,6 +236,16 @@ class ExtManagementSystem < ApplicationRecord
            :to => :default_endpoint,
            :allow_nil => true
   delegate :path, :path=, :to => :default_endpoint, :prefix => "endpoint", :allow_nil => true
+
+  delegate :userid,
+           :userid=,
+           :password,
+           :password=,
+           :auth_key,
+           :auth_key=,
+           :to        => :default_authentication,
+           :allow_nil => true,
+           :prefix    => :default
 
   alias_method :address, :hostname # TODO: Remove all callers of address
 
@@ -292,18 +277,23 @@ class ExtManagementSystem < ApplicationRecord
   supports_attribute :feature => :cloud_tenants
   supports_attribute :feature => :volume_multiattachment
   supports_attribute :feature => :volume_resizing
-  supports_attribute :feature => :cloud_object_store_container_create
+  supports_attribute :supports_cloud_object_store_container_create, :child_model => "CloudObjectStoreContainer"
+  supports_attribute :supports_cloud_network_create, :child_model => "CloudNetwork"
   supports_attribute :feature => :cinder_volume_types
   supports_attribute :feature => :cloud_subnet_create
   supports_attribute :feature => :cloud_volume
   supports_attribute :feature => :cloud_volume_create
+  supports_attribute :feature => :cloud_volume_snapshots
+  supports_attribute :supports_cloud_database_create, :child_model => "CloudDatabase"
   supports_attribute :supports_create_flavor, :child_model => "Flavor"
   supports_attribute :supports_create_floating_ip, :child_model => "FloatingIp"
   supports_attribute :feature => :volume_availability_zones
   supports_attribute :supports_create_security_group, :child_model => "SecurityGroup"
   supports_attribute :supports_create_host_aggregate, :child_model => "HostAggregate"
   supports_attribute :feature => :create_network_router
+  supports_attribute :feature => :create_iso_datastore
   supports_attribute :feature => :storage_services
+  supports_attribute :feature => :storage_service_create
   supports_attribute :feature => :add_storage
   supports_attribute :feature => :add_host_initiator
   supports_attribute :supports_create_host_initiator_group, :child_model => "HostInitiatorGroup"
@@ -315,7 +305,6 @@ class ExtManagementSystem < ApplicationRecord
   virtual_sum :total_cloud_memory, :vms,   :ram_size
 
   alias_method :clusters, :ems_clusters # Used by web-services to return clusters as the property name
-  alias_attribute :to_s, :name
 
   default_value_for :enabled, true
 
@@ -324,7 +313,7 @@ class ExtManagementSystem < ApplicationRecord
   #                            we need to specify original zone for children explicitly
   def pause!(orig_zone = nil)
     previous_zone = orig_zone || zone
-    if previous_zone == Zone.maintenance_zone
+    if previous_zone.maintenance?
       _log.warn("Trying to pause paused EMS [#{name}] id [#{id}]. Skipping.")
       return
     end
@@ -359,7 +348,7 @@ class ExtManagementSystem < ApplicationRecord
     _log.info("Resuming EMS [#{name}] id [#{id}].")
 
     new_zone = if zone_before_pause.nil?
-                 zone == Zone.maintenance_zone ? Zone.default_zone : zone
+                 zone.maintenance? ? Zone.default_zone : zone
                else
                  zone_before_pause
                end
@@ -392,38 +381,6 @@ class ExtManagementSystem < ApplicationRecord
 
   def self.with_port(port)
     joins(:endpoints).where(:endpoints => {:port => port})
-  end
-
-  def self.create_discovered_ems(ost)
-    ip = ost.ipaddr
-    unless with_ipaddress(ip).exists?
-      hostname = Socket.getaddrinfo(ip, nil)[0][2]
-
-      ems_klass, ems_name = if ost.hypervisor.include?(:scvmm)
-                              [ManageIQ::Providers::Microsoft::InfraManager, 'SCVMM']
-                            elsif ost.hypervisor.include?(:rhevm)
-                              [ManageIQ::Providers::Redhat::InfraManager, 'RHEV-M']
-                            elsif ost.hypervisor.include?(:openstack_infra)
-                              [ManageIQ::Providers::Openstack::InfraManager, 'OpenStack Director']
-                            else
-                              [ManageIQ::Providers::Vmware::InfraManager, 'Virtual Center']
-                            end
-
-      ems = ems_klass.create(
-        :ipaddress => ip,
-        :name      => "#{ems_name} (#{ip})",
-        :hostname  => hostname,
-        :zone_id   => MiqServer.my_server.zone.id
-      )
-
-      _log.info("Provider #{ems.name} created")
-      AuditEvent.success(
-        :event        => "ems_created",
-        :target_id    => ems.id,
-        :target_class => "ExtManagementSystem",
-        :message      => "Provider %{provider_name} created" % {:provider_name => ems.name}
-      )
-    end
   end
 
   def self.raw_connect?(*params)
@@ -465,6 +422,10 @@ class ExtManagementSystem < ApplicationRecord
     end
   end
 
+  def to_s
+    name
+  end
+
   def self.base_manager
     (ancestors.select { |klass| klass < ::ExtManagementSystem } - [::ManageIQ::Providers::BaseManager]).last
   end
@@ -481,12 +442,25 @@ class ExtManagementSystem < ApplicationRecord
     self::ProvisionWorkflow
   end
 
+  def self.vm_retire_task_class
+    VmRetireTask
+  end
+
+  def self.orchestration_stack_reconfigure_task_class
+    OrchestrationStackReconfigureTask
+  end
+
+  def self.orchestration_stack_retire_task_class
+    OrchestrationStackRetireTask
+  end
+
   BELONGS_TO_DESCENDANTS_CLASSES_BY_NAME = {
     'Network Manager' => 'ManageIQ::Providers::NetworkManager'
   }.freeze
 
   def self.belongsto_descendant_class(name)
     return unless (descendant = BELONGS_TO_DESCENDANTS_CLASSES_BY_NAME.keys.detect { |x| name.end_with?(x) })
+
     BELONGS_TO_DESCENDANTS_CLASSES_BY_NAME[descendant]
   end
 
@@ -501,6 +475,10 @@ class ExtManagementSystem < ApplicationRecord
   # UI method for determining which icon to show for a particular EMS
   def image_name
     emstype.downcase
+  end
+
+  def default_authentication
+    authentication_type(default_authentication_type) || authentications.build(:authtype => default_authentication_type)
   end
 
   def default_endpoint
@@ -599,6 +577,7 @@ class ExtManagementSystem < ApplicationRecord
 
   def with_provider_connection(options = {})
     raise _("no block given") unless block_given?
+
     _log.info("Connecting through #{self.class.name}: [#{name}]")
     connection = connect(options)
     yield connection
@@ -638,6 +617,7 @@ class ExtManagementSystem < ApplicationRecord
     unless authentication_status_ok?
       raise _("Provider failed last authentication check")
     end
+
     EmsRefresh.queue_refresh(self, nil, opts)
   end
 
@@ -654,11 +634,11 @@ class ExtManagementSystem < ApplicationRecord
   end
 
   def self.ems_infra_discovery_types
-    @ems_infra_discovery_types ||= %w(virtualcenter scvmm rhevm openstack_infra)
+    @ems_infra_discovery_types ||= %w[virtualcenter rhevm openstack_infra]
   end
 
   def self.ems_physical_infra_discovery_types
-    @ems_physical_infra_discovery_types ||= %w(lenovo_ph_infra)
+    @ems_physical_infra_discovery_types ||= %w[lenovo_ph_infra]
   end
 
   # override destroy_queue from AsyncDeleteMixin
@@ -683,7 +663,7 @@ class ExtManagementSystem < ApplicationRecord
       :message => msg
     )
 
-    orchestrate_destroy_queue(task.id, queue_options.reverse_merge(:msg_timeout => 3_600))
+    orchestrate_destroy_queue(task.id, queue_options)
 
     task.id
   end
@@ -709,7 +689,7 @@ class ExtManagementSystem < ApplicationRecord
   end
 
   def orchestrate_destroy_queue(task_id, queue_options = {})
-    self.class._queue_task('orchestrate_destroy', [id], task_id, queue_options)
+    self.class._queue_task('orchestrate_destroy', [id], task_id, queue_options.reverse_merge(:msg_timeout => 3_600))
   end
 
   def orchestrate_destroy(task_id = nil)
@@ -792,6 +772,7 @@ class ExtManagementSystem < ApplicationRecord
     exclude_root_folder = folder.nil?
     folder ||= ems_folder_root
     return [] if folder.nil?
+
     folder.child_folder_paths(
       :exclude_root_folder         => exclude_root_folder,
       :exclude_datacenters         => true,
@@ -803,7 +784,7 @@ class ExtManagementSystem < ApplicationRecord
     if @association_cache.include?(:resource_pools)
       resource_pools.select { |r| !r.is_default }
     else
-      resource_pools.where("is_default != ?", true).to_a
+      resource_pools.where.not(is_default: true).to_a
     end
   end
 
@@ -849,6 +830,7 @@ class ExtManagementSystem < ApplicationRecord
 
   def perf_capture_enabled?
     return @perf_capture_enabled unless @perf_capture_enabled.nil?
+
     @perf_capture_enabled = ems_clusters.any?(&:perf_capture_enabled?) || host.any?(&:perf_capture_enabled?)
   end
   alias_method :perf_capture_enabled, :perf_capture_enabled?
@@ -872,16 +854,19 @@ class ExtManagementSystem < ApplicationRecord
 
   def event_monitor
     return if event_monitor_class.nil?
+
     event_monitor_class.find_by_ems(self).first
   end
 
   def start_event_monitor
     return if event_monitor_class.nil?
+
     event_monitor_class.start_worker_for_ems(self)
   end
 
   def stop_event_monitor
     return if event_monitor_class.nil?
+
     _log.info("EMS [#{name}] id [#{id}]: Stopping event monitor.")
     event_monitor_class.stop_worker_for_ems(self)
   end
@@ -898,28 +883,17 @@ class ExtManagementSystem < ApplicationRecord
   end
 
   def stop_event_monitor_queue_on_change
-    if event_monitor_class && !self.new_record? && default_endpoint.changed.include_any?("hostname", "ipaddress")
+    if event_monitor_class && !new_record? && default_endpoint.changed.include_any?("hostname", "ipaddress")
       _log.info("EMS: [#{name}], Hostname or IP address has changed, stopping Event Monitor.  It will be restarted by the WorkerMonitor.")
       stop_event_monitor_queue
     end
   end
 
   def stop_event_monitor_queue_on_credential_change
-    if event_monitor_class && !self.new_record? && self.credentials_changed?
+    if event_monitor_class && !new_record? && credentials_changed?
       _log.info("EMS: [#{name}], Credentials have changed, stopping Event Monitor.  It will be restarted by the WorkerMonitor.")
       stop_event_monitor_queue
     end
-  end
-
-  def blacklisted_event_names
-    (
-      self.class.blacklisted_events.where(:enabled => true).pluck(:event_name) +
-      blacklisted_events.where(:enabled => true).pluck(:event_name)
-    ).uniq.sort
-  end
-
-  def self.blacklisted_events
-    BlacklistedEvent.where(:provider_model => name, :ems_id => nil)
   end
 
   ###################################
@@ -962,14 +936,14 @@ class ExtManagementSystem < ApplicationRecord
   end
 
   def stop_refresh_worker_queue_on_change
-    if refresh_worker_class && !self.new_record? && default_endpoint.changed.include_any?("hostname", "ipaddress")
+    if refresh_worker_class && !new_record? && default_endpoint.changed.include_any?("hostname", "ipaddress")
       _log.info("EMS: [#{name}], Hostname or IP address has changed, stopping Refresh Worker.  It will be restarted by the WorkerMonitor.")
       stop_refresh_worker_queue
     end
   end
 
   def stop_refresh_worker_queue_on_credential_change
-    if refresh_worker_class && !self.new_record? && self.credentials_changed?
+    if refresh_worker_class && !new_record? && credentials_changed?
       _log.info("EMS: [#{name}], Credentials have changed, stopping Refresh Worker.  It will be restarted by the WorkerMonitor.")
       stop_refresh_worker_queue
     end
@@ -987,11 +961,6 @@ class ExtManagementSystem < ApplicationRecord
     nil
   end
   delegate :class_by_ems, :to => :class
-
-  # @return [Boolean] true if a datastore exists for this type of ems
-  def self.datastore?
-    IsoDatastore.where(:ems_id => all).exists?
-  end
 
   def tenant_identity
     User.super_admin.tap { |u| u.current_group = tenant.default_miq_group }
@@ -1012,10 +981,11 @@ class ExtManagementSystem < ApplicationRecord
              ]
            end
     return if data.empty?
+
     data = data.sort_by { |e| [e[0], e[1], e[2], e[3]] }
     # remove 0's (except for the region)
     data = data.map { |row| row.each_with_index.map { |col, i| i.positive? && col.to_s == "0" ? nil : col } }
-    data.unshift(%w(region zone kind ems clusters hosts vms storages containers groups images nodes projects))
+    data.unshift(%w[region zone kind ems clusters hosts vms storages containers groups images nodes projects])
     # remove columns where all values (except for the header) are blank
     data.first.dup.each do |col_header|
       col = data.first.index(col_header)
@@ -1054,6 +1024,7 @@ class ExtManagementSystem < ApplicationRecord
 
   def build_endpoint_by_role(options)
     return if options.blank?
+
     endpoint = endpoints.detect { |e| e.role == options[:role].to_s }
     if endpoint
       endpoint.assign_attributes(options)
@@ -1064,15 +1035,11 @@ class ExtManagementSystem < ApplicationRecord
 
   def build_authentication_by_role(options)
     return if options.blank?
+
     role = options.delete(:role)
     creds = {}
     creds[role] = options
     update_authentication(creds, options)
-  end
-
-  def clear_association_cache
-    @storages = nil
-    super
   end
 
   define_method(:allow_duplicate_endpoint_url?) { false }

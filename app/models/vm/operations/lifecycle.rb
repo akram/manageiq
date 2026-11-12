@@ -2,18 +2,7 @@ module Vm::Operations::Lifecycle
   extend ActiveSupport::Concern
 
   included do
-    supports :retire do
-      reason   = _("Retire not supported because VM is orphaned") if orphaned?
-      reason ||= _("Retire not supported because VM is archived") if archived?
-      unsupported_reason_add(:retire, reason) if reason
-    end
-
-    supports :publish do
-      reason   = _("Publish not supported because VM is blank")    if blank?
-      reason ||= _("Publish not supported because VM is orphaned") if orphaned?
-      reason ||= _("Publish not supported because VM is archived") if archived?
-      unsupported_reason_add(:publish, reason) if reason
-    end
+    supports(:retire) { unsupported_reason(:action) }
 
     api_relay_method :retire do |options|
       options

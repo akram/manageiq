@@ -1,5 +1,10 @@
 RSpec.describe Host do
+  include Spec::Support::ArelHelper
+  include Spec::Support::SupportsHelper
+
   subject { FactoryBot.create(:host) }
+
+  let(:ems) { FactoryBot.create(:ext_management_system) }
 
   include_examples "AggregationMixin"
   include_examples "MiqPolicyMixin"
@@ -120,18 +125,17 @@ RSpec.describe Host do
   end
 
   context "power operations" do
-    let(:validation_response) { {:available => false, :message => "The Host is not VMware ESX"} }
-
+    let(:power_state) { "off" }
     before do
-      EvmSpecHelper.create_guid_miq_server_zone
+      EvmSpecHelper.local_miq_server
       @ems = FactoryBot.create(:ext_management_system, :tenant => FactoryBot.create(:tenant))
-      @host = FactoryBot.create(:host, :ems_id => @ems.id)
+      @host = FactoryBot.create(:host, :ems_id => @ems.id, :power_state => power_state)
     end
 
     context "#start" do
       before do
-        allow_any_instance_of(described_class).to receive_messages(:validate_start   => {})
-        allow_any_instance_of(described_class).to receive_messages(:validate_ipmi    => {:available => true, :message => nil})
+        stub_supports_all_others(described_class)
+        stub_supports(described_class, :ipmi)
         allow_any_instance_of(described_class).to receive_messages(:run_ipmi_command => "off")
         FactoryBot.create(:miq_event_definition, :name => :request_host_start)
         # admin user is needed to process Events
@@ -143,8 +147,7 @@ RSpec.describe Host do
 
         MiqQueue.delete_all
         @host.start
-        status, message, result = MiqQueue.first.deliver
-        MiqQueue.first.delivered(status, message, result)
+        MiqQueue.first.deliver_and_process
       end
 
       it "policy prevented" do
@@ -159,28 +162,28 @@ RSpec.describe Host do
     end
 
     context "with shutdown invalid" do
-      it("#shutdown")          { expect { @host.shutdown }.not_to raise_error }
-      it("#validate_shutdown") { expect(@host.validate_shutdown).to eq(validation_response) }
+      it("#shutdown")           { expect { @host.shutdown }.not_to raise_error }
+      it("#supports_shutdown?") { expect(@host.supports?(:shutdown)).to be_falsey }
     end
 
     context "with reboot invalid" do
-      it("#reboot")          { expect { @host.reboot }.not_to raise_error }
-      it("#validate_reboot") { expect(@host.validate_reboot).to eq(validation_response) }
+      it("#reboot")           { expect { @host.reboot }.not_to raise_error }
+      it("#supports_reboot?") { expect(@host.supports?(:reboot)).to be_falsey }
     end
 
     context "with standby invalid" do
-      it("#standby")          { expect { @host.standby }.not_to raise_error }
-      it("#validate_standby") { expect(@host.validate_standby).to eq(validation_response) }
+      it("#standby")            { expect { @host.standby }.not_to raise_error }
+      it("#supports_shutdown?") { expect(@host.supports?(:shutdown)).to be_falsey }
     end
 
     context "with enter_maint_mode invalid" do
-      it("#enter_maint_mode")          { expect { @host.enter_maint_mode }.not_to raise_error }
-      it("#validate_enter_maint_mode") { expect(@host.validate_enter_maint_mode).to eq(validation_response) }
+      it("#enter_maint_mode")           { expect { @host.enter_maint_mode }.not_to raise_error }
+      it("#supports_enter_maint_mode?") { expect(@host.supports?(:enter_maint_mode)).to be_falsey }
     end
 
     context "with exit_maint_mode invalid" do
       it("#exit_maint_mode")          { expect { @host.exit_maint_mode }.not_to raise_error }
-      it("#validate_exit_maint_mode") { expect(@host.validate_exit_maint_mode).to eq(validation_response) }
+      it("#supports_exit_maint_mode") { expect(@host.supports?(:exit_maint_mode)).to be_falsey }
     end
   end
 
@@ -197,91 +200,157 @@ RSpec.describe Host do
   end
 
   context "host validation" do
+    let(:password)      { "v2:{/OViaBJ0Ug+RSW9n7EFGqw==}" }
+    # use this to ensure that the latest creds are being used
+    let(:old_creds)     { {:default => {:userid => "bad", :password => password}} }
+    let(:default_creds) { {:default => {:userid => "root", :password => password}} }
+    let(:remote_creds)  { {:remote => {:userid => "root", :password => password}} }
+    let(:both_creds)    { remote_creds.merge(default_creds) }
+
     before do
       EvmSpecHelper.local_miq_server
 
-      @password = "v2:{/OViaBJ0Ug+RSW9n7EFGqw==}"
       @ems = FactoryBot.create(:ems_vmware)
       @host = FactoryBot.create(:host_vmware_esx, :ext_management_system => @ems)
-      @data = {:default => {:userid => "root", :password => @password}}
-      @options = {:save => false}
     end
 
-    context "#verify_credentials_task" do
+    describe "#verify_credentials_task" do
       it "verifies the credentials" do
-        @host.update_authentication(@data, @options)
-        @host.save
-        @host.verify_credentials_task(FactoryBot.create(:user).userid)
+        @host.update_authentication(default_creds)
+        @host.verify_credentials_task(FactoryBot.create(:user).userid, :default)
 
         expect(MiqQueue.last).to have_attributes(
+          :args        => [:default, {}],
           :method_name => "verify_credentials?",
           :instance_id => @host.id,
           :class_name  => @host.class.name,
           :role        => "ems_operations",
           :zone        => @ems.zone.name,
-          :queue_name  => @ems.queue_name_for_ems_operations,
+          :queue_name  => @ems.queue_name_for_ems_operations
+        )
+      end
+
+      it "passes the new credentials" do
+        @host.update_authentication(old_creds)
+        @host.verify_credentials_task(FactoryBot.create(:user).userid, :default, "authentications" => default_creds.deep_stringify_keys)
+
+        expect(MiqQueue.last).to have_attributes(
+          :args        => [:default, {"authentications" => default_creds.deep_stringify_keys}],
+          :method_name => "verify_credentials?",
+          :instance_id => @host.id,
+          :class_name  => @host.class.name,
+          :role        => "ems_operations",
+          :zone        => @ems.zone.name,
+          :queue_name  => @ems.queue_name_for_ems_operations
+        )
+      end
+
+      it "encryptes the password before putting it on the queue" do
+        credentials = {
+          "default" => {
+            :userid   => "root",
+            :auth_key => "SECRET"
+          },
+          "ws"      => {
+            :userid   => "root",
+            :password => "ALSO_SECRET"
+          }
+        }
+
+        expected_credentials = credentials.dup
+        expected_credentials["default"][:auth_key] = ManageIQ::Password.encrypt(credentials.dig("default", :auth_key))
+        expected_credentials["ws"][:password]      = ManageIQ::Password.encrypt(credentials.dig("ws", :password))
+
+        @host.verify_credentials_task(FactoryBot.create(:user).userid, :default, :credentials => credentials)
+
+        expect(MiqQueue.last).to have_attributes(
+          :args        => [:default, {:credentials => expected_credentials}],
+          :method_name => "verify_credentials?",
+          :instance_id => @host.id,
+          :class_name  => @host.class.name,
+          :role        => "ems_operations",
+          :zone        => @ems.zone.name,
+          :queue_name  => @ems.queue_name_for_ems_operations
         )
       end
     end
 
     context "default credentials" do
-      it "save" do
-        @host.update_authentication(@data, @options)
+      it "#update_authentication" do
+        @host.update_authentication(default_creds)
+        expect(@host.authentications.count).to eq(1)
+      end
+
+      it "#update_authentication (:save => false)" do
+        @host.update_authentication(default_creds, :save => false)
+        expect(@host.authentications.count).to eq(0)
         @host.save
         expect(@host.authentications.count).to eq(1)
       end
 
-      it "validate" do
-        allow(@host).to receive(:connect_ssh)
+      it "#validate does not save credentials" do
+        @host.update_authentication(default_creds, :save => false)
         assert_default_credentials_validated
         expect(@host.authentications.count).to eq(0)
       end
     end
 
+    context "passing credentials" do
+      # keeping us honest
+      it "assert_default fails by default" do
+        @host.update_authentication(old_creds)
+        expect do
+          assert_default_credentials_validated
+        end.to raise_error(RSpec::Expectations::ExpectationNotMetError)
+      end
+
+      it "updates credentials via validate_credential options" do
+        @host.update_authentication(old_creds)
+        assert_default_credentials_validated("authentications" => default_creds)
+      end
+    end
+
     context "default and remote credentials" do
       it "save default, then save remote" do
-        @host.update_authentication(@data, @options)
-        @host.save
+        @host.update_authentication(default_creds)
         expect(@host.authentications.count).to eq(1)
 
-        @data[:remote] = {:userid => "root", :password => @password}
-        @host.update_authentication(@data, @options)
-        @host.save
+        @host.update_authentication(both_creds)
         expect(@host.authentications.count).to eq(2)
       end
 
       it "save both together" do
-        @data[:remote] = {:userid => "root", :password => @password}
-        @host.update_authentication(@data, @options)
-        @host.save
+        @host.update_authentication(both_creds)
         expect(@host.authentications.count).to eq(2)
       end
 
       it "validate remote with both credentials" do
-        @data[:remote] = {:userid => "root", :password => @password}
+        @host.update_authentication(both_creds, :save => false)
         assert_remote_credentials_validated
       end
 
       it "validate default with both credentials" do
-        @data[:remote] = {:userid => "root", :password => @password}
+        @host.update_authentication(both_creds, :save => false)
         assert_default_credentials_validated
       end
 
       it "validate default, then validate remote" do
-        allow(@host).to receive(:connect_ssh)
+        @host.update_authentication(default_creds, :save => false)
         assert_default_credentials_validated
 
-        @data[:remote] = {:userid => "root", :password => @password}
+        @host.update_authentication(both_creds, :save => false)
         assert_remote_credentials_validated
       end
 
       it "validate remote, then validate default" do
-        @data = {:default => {:userid => "", :password => ""},
-                 :remote  => {:userid => "root", :password => @password},
+        data = {:default => {:userid => "", :password => ""},
+                :remote  => {:userid => "root", :password => password},
         }
+        @host.update_authentication(data, :save => false)
         assert_remote_credentials_validated
 
-        @data[:default] = {:userid => "root", :password => @password}
+        data[:default] = {:userid => "root", :password => password}
+        @host.update_authentication(data, :save => false)
         assert_default_credentials_validated
       end
     end
@@ -301,17 +370,19 @@ RSpec.describe Host do
     it("#enabled_inbound_ports")      { expect(subject.enabled_inbound_ports).to      match_array([1003, 1001]) }
   end
 
-
-  def assert_default_credentials_validated
-    allow(@host).to receive(:verify_credentials_with_ws)
-    @host.update_authentication(@data, @options)
-    expect(@host.verify_credentials(:default)).to be_truthy
+  def assert_default_credentials_validated(options = {})
+    # all but openstack use ws as the default authentication type
+    expect(@host).to receive(:verify_credentials_with_ws).with(:default)
+    expect(@host.verify_credentials?(:default, options)).to be_truthy
+    # make sure we got the right userid
+    expect(@host.authentication_type(:default).userid).to eq("root")
   end
 
-  def assert_remote_credentials_validated
-    allow(@host).to receive(:connect_ssh)
-    @host.update_authentication(@data, @options)
-    expect(@host.verify_credentials(:remote)).to be_truthy
+  def assert_remote_credentials_validated(options = {})
+    expect(@host).to receive(:connect_ssh).with({})
+    expect(@host.verify_credentials?(:remote, options)).to be_truthy
+    # make sure we got the right userid
+    expect(@host.authentication_type(:remote).userid).to eq("root")
   end
 
   context "#tenant_identity" do
@@ -473,64 +544,40 @@ RSpec.describe Host do
     end
   end
 
-  describe "#validate_power_state" do
-    let(:host) do
-      FactoryBot.create(:host_vmware_esx,
-                         :ext_management_system => FactoryBot.create(:ems_vmware),
-                         :vmm_vendor            => 'vmware')
-    end
-
-    context "when host power state equal to pstate" do
-      it "returns nil" do
-        expect(host.validate_power_state('on')).to be_nil
-        expect(host.validate_power_state(['on'])).to be_nil
-      end
-    end
-
-    context "when host power state does not equal to pstate" do
-      it "returns available false" do
-        expect(host.validate_power_state('off')).to eq(:available => false,
-                                                       :message   => "The Host is not powered 'off'")
-        expect(host.validate_power_state(['off'])).to eq(:available => false,
-                                                         :message   => "The Host is not powered [\"off\"]")
-      end
-    end
-  end
-
   context "vmotion validation methods" do
     let(:host) do
       FactoryBot.create(:host_vmware_esx,
-                         :ext_management_system => FactoryBot.create(:ems_vmware),
-                         :vmm_vendor            => 'vmware')
+                        :ext_management_system => FactoryBot.create(:ems_vmware),
+                        :vmm_vendor            => 'vmware')
     end
 
     describe "#validate_enable_vmotion" do
       it "returns available true" do
-        expect(host.validate_enable_vmotion).to eq(:available => true, :message => nil)
+        expect(host.supports?(:enable_vmotion)).to be_truthy
       end
     end
 
     describe "#validate_disable_vmotion" do
       it "returns available true" do
-        expect(host.validate_disable_vmotion).to eq(:available => true, :message => nil)
+        expect(host.supports?(:disable_vmotion)).to be_truthy
       end
     end
 
     describe "#validate_vmotion_enabled?" do
       it "returns available true" do
-        expect(host.validate_vmotion_enabled?).to eq(:available => true, :message => nil)
+        expect(host.supports?(:vmotion_enabled)).to be_truthy
       end
     end
   end
 
-  describe "#validate_ipmi" do
-    subject { host.validate_ipmi }
+  describe "#supports (validate_ipmi portion)" do
+    subject { host.unsupported_reason(:reset) }
 
     context "host does not have ipmi address" do
       let(:host) { FactoryBot.create(:host) }
 
       it "returns available false" do
-        expect(subject).to eq(:available => false, :message => "The Host is not configured for IPMI")
+        expect(subject).to eq("The Host is not configured for IPMI")
       end
     end
 
@@ -542,23 +589,69 @@ RSpec.describe Host do
 
       context "host does not have ipmi credentials" do
         it "returns available false" do
-          expect(subject).to eq(:available => false, :message => "The Host has no IPMI credentials")
+          expect(subject).to eq("The Host has no IPMI credentials")
         end
       end
 
       context "host has incorrect ipmi credentials" do
         it "returns available false" do
           host.update_authentication(:ipmi => {:password => "a"})
-          expect(subject).to eq(:available => false, :message => "The Host has invalid IPMI credentials")
+          expect(subject).to eq("The Host has invalid IPMI credentials")
         end
       end
 
       context "host has correct ipmi credentials" do
         it "returns available true" do
           host.update_authentication(:ipmi => {:userid => "a", :password => "a"})
-          expect(subject).to eq(:available => true, :message => nil)
+          expect(subject).to be_nil
         end
       end
+    end
+  end
+
+  describe "#normalized_state" do
+    it "returns archived" do
+      host = FactoryBot.build(:host)
+      expect(host.normalized_state).to eq("archived")
+    end
+
+    it "returns unknown" do
+      host = FactoryBot.build(:host, :power_state => nil, :ext_management_system => ems)
+      expect(host.normalized_state).to eq("unknown")
+    end
+
+    it "returns power_state" do
+      host = FactoryBot.build(:host, :power_state => "on", :ext_management_system => ems)
+      expect(host.normalized_state).to eq("on")
+    end
+  end
+
+  describe "#archived" do
+    it "works in sql true" do
+      FactoryBot.create(:host)
+      expect(virtual_column_sql_value(Host, "archived")).to eq(true)
+    end
+
+    it "works in sql false" do
+      FactoryBot.create(:host, :ext_management_system => ems)
+      expect(virtual_column_sql_value(Host, "archived")).to eq(false)
+    end
+
+    it "works in ruby true" do
+      expect(Host.new.archived).to be true
+    end
+
+    it "works in ruby false" do
+      expect(FactoryBot.create(:host, :ext_management_system => ems).archived).to be false
+    end
+  end
+
+  describe ".archived" do
+    it "only returns archived" do
+      host = FactoryBot.create(:host)
+      FactoryBot.create(:host, :ext_management_system => ems)
+
+      expect(Host.archived).to eq([host])
     end
   end
 
@@ -572,13 +665,13 @@ RSpec.describe Host do
       let(:host_off) { FactoryBot.create(:host_with_ipmi, :power_state => 'off') }
 
       it "returns available true" do
-        expect(host_off.validate_start).to eq(:available => true, :message => nil)
+        expect(host_off.supports?(:start)).to be_truthy
       end
     end
 
     describe "#validate_stop" do
       it "returns available true" do
-        expect(host_with_ipmi.validate_stop).to eq(:available => true, :message => nil)
+        expect(host_with_ipmi.supports?(:stop)).to be_truthy
       end
     end
 
@@ -615,7 +708,7 @@ RSpec.describe Host do
 
   describe "#scan" do
     before do
-      EvmSpecHelper.create_guid_miq_server_zone
+      EvmSpecHelper.local_miq_server
       @host = FactoryBot.create(:host_vmware)
       FactoryBot.create(:miq_event_definition, :name => :request_host_scan)
       # admin user is needed to process Events
@@ -647,7 +740,6 @@ RSpec.describe Host do
     let(:host) { FactoryBot.create(:host_vmware, :ext_management_system => ems) }
 
     before do
-      MiqRegion.seed
       Zone.seed
     end
 

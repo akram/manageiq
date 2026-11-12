@@ -17,9 +17,6 @@ class Flavor < ApplicationRecord
   alias_attribute :cpus, :cpu_total_cores
   alias_attribute :cpu_cores, :cpu_cores_per_socket
 
-  virtual_column :cpus, :type => :integer
-  virtual_column :cpu_cores, :type => :integer
-
   def name_with_details
     details = if cpus == 1
                 if root_disk_size.nil?
@@ -46,9 +43,9 @@ class Flavor < ApplicationRecord
     ext_management_system&.class_by_ems(:Flavor)
   end
 
+  # NOTE: tenant (source_tenant) is far away, so it brings back a lot of models. can we use left_joins instead?
   def self.tenant_joins_clause(scope)
-    scope.includes(:cloud_tenants => "source_tenant", :ext_management_system => {})
-         .references(:cloud_tenants, :tenants, :ext_management_system)
+    scope.left_outer_joins(:cloud_tenants => "source_tenant", :ext_management_system => {})
   end
 
   # Create a flavor as a queued task and return the task id. The queue name and
@@ -79,8 +76,10 @@ class Flavor < ApplicationRecord
 
   def self.create_flavor(ems_id, options)
     raise ArgumentError, _("ems cannot be nil") if ems_id.nil?
+
     ext_management_system = ExtManagementSystem.find(ems_id)
     raise ArgumentError, _("ems cannot be found") if ext_management_system.nil?
+
     klass = ext_management_system.class_by_ems(:Flavor)
     klass.raw_create_flavor(ext_management_system, options)
   end

@@ -33,7 +33,7 @@ RSpec.describe MiqWorker::ContainerCommon do
       worker = FactoryBot.create(:miq_generic_worker)
       worker.configure_worker_deployment(test_deployment)
 
-      expect(test_deployment.dig(:spec, :template, :spec, :nodeSelector)).to eq("manageiq/zone-#{MiqServer.my_zone}".gsub(" ", "-") => "true")
+      expect(test_deployment.dig(:spec, :template, :spec, :nodeSelector)).to eq("manageiq/zone-#{MiqServer.my_zone}".tr(" ", "-") => "true")
     end
 
     it "doesn't add a node selector for the default zone" do
@@ -43,23 +43,68 @@ RSpec.describe MiqWorker::ContainerCommon do
 
       expect(test_deployment.dig(:spec, :template, :spec).keys).not_to include(:nodeSelector)
     end
+  end
 
-    it "MiqUiWorker adds the ui_httpd_configs volume mount" do
-      container_orchestrator = ContainerOrchestrator.new
-      kubeclient = double("Kubeclient::Client")
+  describe "#create_container_objects" do
+    let(:container_orchestrator) { ContainerOrchestrator.new }
+    let(:kubeclient)             { double("Kubeclient::Client") }
 
-      expect(ContainerOrchestrator).to receive(:new).and_return(container_orchestrator)
+    before do
+      expect(ContainerOrchestrator).to  receive(:new).at_least(:once).and_return(container_orchestrator)
+      expect(container_orchestrator).to receive(:my_node_affinity_arch_values).and_return(["amd64", "arm64"])
       expect(container_orchestrator).to receive(:my_namespace).and_return("my-namespace")
       expect(container_orchestrator).to receive(:raw_connect).and_return(kubeclient)
+    end
 
-      expect(kubeclient).to receive(:create_deployment) do |deployment|
-        expect(deployment.fetch_path(:spec, :template, :spec, :containers, 0, :volumeMounts)).to match_array([{:name => "ui-httpd-configs", :mountPath => "/etc/httpd/conf.d"}])
-        expect(deployment.fetch_path(:spec, :template, :spec, :volumes)).to match_array([{:name=>"ui-httpd-configs", :configMap=>{:name=>"ui-httpd-configs", :defaultMode=>420}}])
+    context "MiqUiWorker" do
+      let(:ui_worker) { MiqUiWorker.new }
+
+      it "adds the ui_httpd_configs volume mount" do
+        expect(kubeclient).to receive(:create_deployment) do |deployment|
+          expect(deployment.fetch_path(:spec, :template, :spec, :containers, 0, :volumeMounts)).to include({:name => "ui-httpd-configs", :mountPath => "/etc/httpd/conf.d"})
+          expect(deployment.fetch_path(:spec, :template, :spec, :volumes)).to include({:name => "ui-httpd-configs", :configMap => {:name => "ui-httpd-configs", :defaultMode => 0o644}})
+        end
+
+        expect(ui_worker).to receive(:scale_deployment)
+        ui_worker.create_container_objects
+      end
+    end
+
+    context "Service workers" do
+      let(:worker) { MiqWebServiceWorker.new }
+
+      it "use httpGet liveness and readiness probes" do
+        expect(kubeclient).to receive(:create_deployment) do |deployment|
+          expect(deployment.fetch_path(:spec, :template, :spec, :containers, 0, :ports)).to match_array([{:containerPort => 3000}, {:containerPort => 4000}])
+          expect(deployment.fetch_path(:spec, :template, :spec, :containers, 0, :livenessProbe)).to eq(:httpGet => {:path => "/ping", :port => 4000}, :initialDelaySeconds => 240, :periodSeconds => 15, :timeoutSeconds => 10)
+          expect(deployment.fetch_path(:spec, :template, :spec, :containers, 0, :readinessProbe)).to eq(:httpGet => {:path => "/ping", :port => 4000}, :initialDelaySeconds => 60, :timeoutSeconds => 600)
+        end
+
+        expect(worker).to receive(:scale_deployment)
+        worker.create_container_objects
       end
 
-      ui_worker = MiqUiWorker.new
-      expect(ui_worker).to receive(:scale_deployment)
-      ui_worker.create_container_objects
+      it "respect custom starting_timeout setting" do
+        stub_settings_merge(:workers => {:worker_base => {:web_service_worker => {:starting_timeout => 120}}})
+
+        expect(kubeclient).to receive(:create_deployment) do |deployment|
+          expect(deployment.fetch_path(:spec, :template, :spec, :containers, 0, :readinessProbe, :timeoutSeconds)).to eq(120)
+        end
+
+        expect(worker).to receive(:scale_deployment)
+        worker.create_container_objects
+      end
+
+      it "defaults to 3 seconds if starting_timeout is nil" do
+        stub_settings_merge(:workers => {:worker_base => {:web_service_worker => {:starting_timeout => nil}}})
+
+        expect(kubeclient).to receive(:create_deployment) do |deployment|
+          expect(deployment.fetch_path(:spec, :template, :spec, :containers, 0, :readinessProbe, :timeoutSeconds)).to eq(3)
+        end
+
+        expect(worker).to receive(:scale_deployment)
+        worker.create_container_objects
+      end
     end
   end
 
@@ -86,12 +131,42 @@ RSpec.describe MiqWorker::ContainerCommon do
       test_cases.each { |test| expect(test[:subject].worker_deployment_name).to eq(test[:name]) }
     end
 
-    it "no worker deployment names are over 60 characters", :providers_common => true do
+  end
+
+  describe "#deployment_base_name" do
+    before { MiqWorkerType.seed }
+
+    it "no worker deployment names are over 63 characters", :providers_common => true do
       # OpenShift does not allow deployment names over 63 characters
-      # We also want to leave some for the ems_id so we compare against 60 to be safe
-      MiqWorkerType.seed
+      # We also want to leave some room for the compressed region number (e.g. 10r99)
+      # and an ems_id so we buffer 9 characters.
       MiqWorkerType.pluck(:worker_type).each do |klass|
-        expect(klass.constantize.new.worker_deployment_name.length).to be <= 60
+        deployment_base_name = klass.constantize.new.deployment_base_name
+        expect(deployment_base_name.length + 9).to be <= 63, "Expected \"10r99-#{deployment_base_name}-10\".length <= 63"
+      end
+    end
+
+    context "ems_id" do
+      let(:subject) { ManageIQ::Providers::BaseManager::EventCatcher.new }
+
+      it "is appended" do
+        subject.queue_name = "ems_1"
+        expect(subject.worker_deployment_name[-2..]).to eq("-1")
+      end
+
+      it "isn't appended for nil queue_name" do
+        subject.queue_name = nil
+        expect(subject.worker_deployment_name[-7..]).to eq("catcher")
+      end
+
+      it "isn't appended for blank queue_name" do
+        subject.queue_name = " "
+        expect(subject.worker_deployment_name[-7..]).to eq("catcher")
+      end
+
+      it "isn't appended for invalid queue_name prefix" do
+        subject.queue_name = "notems_1"
+        expect(subject.worker_deployment_name[-7..]).to eq("catcher")
       end
     end
   end

@@ -14,6 +14,7 @@ RSpec.describe GenericObjectDefinition do
       }
     )
   end
+  let(:objects) { FactoryBot.create_list(:generic_object, 2, :generic_object_definition => definition) }
 
   it "doesn't access database when unchanged model is saved" do
     m = FactoryBot.create(:generic_object_definition)
@@ -108,7 +109,7 @@ RSpec.describe GenericObjectDefinition do
     let(:definition) do
       FactoryBot.create(:generic_object_definition,
                          :name       => 'test',
-                         :properties => { :attributes => {:status => "string"}})
+                         :properties => {:attributes => {:status => "string"}})
     end
 
     it 'adds a new attribute' do
@@ -135,7 +136,7 @@ RSpec.describe GenericObjectDefinition do
     let(:definition) do
       FactoryBot.create(:generic_object_definition,
                          :name       => 'test',
-                         :properties => { :attributes => {:status => "string"}})
+                         :properties => {:attributes => {:status => "string"}})
     end
 
     it 'does nothing for non-existing attribute' do
@@ -159,17 +160,17 @@ RSpec.describe GenericObjectDefinition do
     let(:definition) do
       FactoryBot.create(:generic_object_definition,
                          :name       => 'test',
-                         :properties => { :methods => %w(method1) })
+                         :properties => {:methods => %w[method1]})
     end
 
     it 'adds a new method' do
       definition.add_property_method("add_vms")
-      expect(definition.properties).to include(:methods => %w(method1 add_vms))
+      expect(definition.properties).to include(:methods => %w[method1 add_vms])
     end
 
     it 'does nothing for existing method' do
       expect { definition.add_property_method("method1") }.to make_database_queries(:count => 4..8)
-      expect(definition.properties).to include(:methods => %w(method1))
+      expect(definition.properties).to include(:methods => %w[method1])
     end
   end
 
@@ -177,7 +178,7 @@ RSpec.describe GenericObjectDefinition do
     let(:definition) do
       FactoryBot.create(:generic_object_definition,
                          :name       => 'test',
-                         :properties => { :methods => %w(method1) })
+                         :properties => {:methods => %w[method1]})
     end
 
     it 'deletes an existing method' do
@@ -187,7 +188,7 @@ RSpec.describe GenericObjectDefinition do
 
     it 'does nothing for non-existing method' do
       definition.delete_property_method(:method2)
-      expect(definition.properties).to include(:methods => %w(method1))
+      expect(definition.properties).to include(:methods => %w[method1])
     end
   end
 
@@ -195,7 +196,7 @@ RSpec.describe GenericObjectDefinition do
     let(:definition) do
       FactoryBot.create(:generic_object_definition,
                          :name       => 'test',
-                         :properties => { :associations => { :vms => 'Vm' } })
+                         :properties => {:associations => {:vms => 'Vm'}})
     end
 
     it 'adds a new association' do
@@ -260,7 +261,7 @@ RSpec.describe GenericObjectDefinition do
     subject { definition.find_objects(@options) }
 
     it 'finds multiple objects' do
-      @options = { :max_number => 10 }
+      @options = {:max_number => 10}
       expect(subject.size).to eq(2)
     end
 
@@ -393,6 +394,12 @@ RSpec.describe GenericObjectDefinition do
         expect(definition.custom_actions).to match(expected)
       end
     end
+  end
+
+  describe '#generic_objects_count' do
+    before  { objects }
+    subject { definition }
+    it_behaves_like "sql friendly virtual_attribute", :generic_objects_count, 2
   end
 
   shared_examples 'AR attribute allowing letters' do |hash|

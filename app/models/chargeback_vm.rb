@@ -31,15 +31,15 @@ class ChargebackVm < Chargeback
     :storage_used_cost        => :float,
     :storage_used_metric      => :float,
     :storage_cost             => :float,
-    :total_cost               => :float,
+    :total_cost               => :float
   )
 
-  DEFAULT_STORAGE_METRICS = %w(
+  DEFAULT_STORAGE_METRICS = %w[
     storage_allocated_unclassified_metric
     storage_allocated_unclassified_cost
     storage_allocated_metric
     storage_allocated_cost
-  ).freeze
+  ].freeze
 
   cache_with_timeout(:current_volume_types) do
     volume_types = CloudVolume.volume_types
@@ -64,7 +64,7 @@ class ChargebackVm < Chargeback
   # }
   def self.dynamic_columns_for(column_type)
     current_volume_types.each_with_object({}) do |volume_type, result|
-      %i(metric cost rate).collect do |type|
+      %i[metric cost rate].collect do |type|
         result["storage_allocated_#{volume_type || 'unclassified'}_#{type}"] = column_type
       end
     end
@@ -98,8 +98,12 @@ class ChargebackVm < Chargeback
   end
 
   def self.extra_resources_without_rollups(region)
-    # support hyper-v for which we do not collect metrics yet (also when we are including metrics in calculations)
-    scope = @options.include_metrics? ? ManageIQ::Providers::Microsoft::InfraManager::Vm : vms(region)
+    # support VM types for which we do not collect metrics yet (also when we are including metrics in calculations)
+    #
+    # NOTE since this scope is used later on as part of other queries this has to be an
+    # ActiveRecord::Relation not an array.  The SupportsFeatureMixin.supporting method
+    # checks instance-level supports which returns an array thus cannot be used here.
+    scope = @options.include_metrics? ? Vm.where.not(:type => Vm.types_supporting(:capture)) : vms(region)
     scope = scope.eager_load(:hardware, :taggings, :tags, :host, :ems_cluster, :storage, :ext_management_system,
                              :tenant)
 
@@ -111,7 +115,7 @@ class ChargebackVm < Chargeback
   end
 
   def self.report_static_cols
-    %w(vm_name)
+    %w[vm_name]
   end
 
   def self.sub_metric_columns
@@ -165,7 +169,7 @@ class ChargebackVm < Chargeback
           user = User.lookup_by_userid(@options[:owner])
           if user.nil?
             _log.error("Unable to find user '#{@options[:owner]}'. Calculating chargeback costs aborted.")
-            raise MiqException::Error, _("Unable to find user '%{name}'") % {:name => @options[:owner]}
+            raise MiqException::Error, _("Unable to find user '%{user}'") % {:user => @options[:owner]}
           end
           user.vms
         elsif @options[:tag]
@@ -181,13 +185,18 @@ class ChargebackVm < Chargeback
           end
 
           tenant_name = tenant.name
-          tenant = Tenant.in_region(region).find_by(:name => tenant.name)
+          # NOTE: tenant.name has settings applied.
+          # i.e.: Tenant.where(:id => tenant.id, :name => tenant.name).exists? could be false
+          if tenant.region_number != region
+            tenant = Tenant.in_region(region).find_by(:name => tenant.name)
+          end
           if tenant.nil?
             error_message = "Unable to find tenant '#{tenant_name}' (based on tenant id '#{@options[:tenant_id]}' from default region) in region #{region}"
             _log.info("#{error_message}. Calculating chargeback costs skipped for #{@options[:tenant_id]} in region #{region}.")
-            return Vm.none
+            Vm.none
+          else
+            Vm.where(:tenant_id => tenant.subtree.select(:id))
           end
-          Vm.where(:id => tenant.subtree.map { |t| t.vms.ids }.flatten)
         elsif @options[:service_id]
           service = Service.find(@options[:service_id])
           if service.nil?

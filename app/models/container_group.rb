@@ -9,7 +9,7 @@ class ContainerGroup < ApplicationRecord
   include TenantIdentityMixin
   include ArchivedMixin
   include CustomActionsMixin
-  include_concern 'Purging'
+  include Purging
 
   # :name, :uid, :creation_timestamp, :resource_version, :namespace
   # :labels, :restart_policy, :dns_policy
@@ -17,14 +17,23 @@ class ContainerGroup < ApplicationRecord
   has_many :containers, :dependent => :destroy
   has_many :container_images, -> { distinct }, :through => :containers
   belongs_to  :ext_management_system, :foreign_key => "ems_id"
-  has_many :labels, -> { where(:section => "labels") }, :class_name => "CustomAttribute", :as => :resource, :dependent => :destroy
-  has_many :node_selector_parts, -> { where(:section => "node_selectors") }, :class_name => "CustomAttribute", :as => :resource, :dependent => :destroy
+  has_many :annotations, -> { where(:section => "annotations") }, # rubocop:disable Rails/HasManyOrHasOneDependent
+           :class_name => "CustomAttribute",
+           :as         => :resource,
+           :inverse_of => :resource
+  has_many :labels, -> { where(:section => "labels") }, # rubocop:disable Rails/HasManyOrHasOneDependent
+           :class_name => "CustomAttribute",
+           :as         => :resource,
+           :inverse_of => :resource
+  has_many :node_selector_parts, -> { where(:section => "node_selectors") }, # rubocop:disable Rails/HasManyOrHasOneDependent
+           :class_name => "CustomAttribute",
+           :as         => :resource,
+           :inverse_of => :resource
   has_many :container_conditions, :class_name => "ContainerCondition", :as => :container_entity, :dependent => :destroy
   belongs_to :container_node
   has_and_belongs_to_many :container_services, :join_table => :container_groups_container_services
   belongs_to :container_replicator
   belongs_to :container_project
-  belongs_to :old_container_project, :foreign_key => "old_container_project_id", :class_name => 'ContainerProject'
   belongs_to :container_build_pod
   has_many :container_volumes, :as => :parent, :dependent => :destroy
   has_many :persistent_volume_claim, :through => :container_volumes
@@ -35,6 +44,9 @@ class ContainerGroup < ApplicationRecord
   has_many :metric_rollups, :as => :resource
   has_many :vim_performance_states, :as => :resource
   delegate :my_zone, :to => :ext_management_system, :allow_nil => true
+
+  # Providers that can fetch pod logs must override this with `supports :logs`
+  supports_not :logs
 
   virtual_column :ready_condition_status, :type => :string, :uses => :container_conditions
   virtual_column :running_containers_summary, :type => :string
@@ -78,6 +90,18 @@ class ContainerGroup < ApplicationRecord
     end
   end
 
+  def ems_event_filter
+    {
+      "container_group_name" => name,
+      "container_namespace"  => container_project.name,
+      "ems_id"               => ext_management_system.id
+    }
+  end
+
+  def miq_event_filter
+    {"ems_id" => ext_management_system.id}
+  end
+
   PERF_ROLLUP_CHILDREN = []
 
   def perf_rollup_parents(interval_name = nil)
@@ -88,16 +112,43 @@ class ContainerGroup < ApplicationRecord
 
   def disconnect_inv
     return if archived?
+
     _log.info("Disconnecting Pod [#{name}] id [#{id}] from EMS [#{ext_management_system.name}] id [#{ext_management_system.id}]")
-    self.containers.each(&:disconnect_inv)
+    containers.each(&:disconnect_inv)
     self.container_services = []
     self.container_replicator_id = nil
     self.container_build_pod_id = nil
-    # Keeping old_container_project_id for backwards compatibility, we will need a migration that is putting it back to
-    # container_project_id
-    self.old_container_project_id = self.container_project_id
     self.deleted_on = Time.now.utc
     save
+  end
+
+  def logs_queue(userid, options = {})
+    raise MiqException::Error, unsupported_reason(:logs) unless supports?(:logs)
+
+    task_opts = {
+      :action => "Fetching logs for Pod #{name}",
+      :userid => userid
+    }
+
+    queue_opts = {
+      :class_name  => self.class.name,
+      :instance_id => id,
+      :method_name => "logs",
+      :args        => [options],
+      :role        => "ems_operations",
+      :zone        => my_zone,
+      :queue_name  => ext_management_system.queue_name_for_ems_operations
+    }
+
+    MiqTask.generic_action_with_callback(task_opts, queue_opts)
+  end
+
+  def logs(options = {})
+    raw_logs(options)
+  end
+
+  def raw_logs(_options = {})
+    raise NotImplementedError, _("raw_logs must be implemented in a subclass")
   end
 
   def self.display_name(number = 1)

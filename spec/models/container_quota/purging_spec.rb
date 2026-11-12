@@ -2,7 +2,7 @@ RSpec.describe ContainerQuota do
   context "::Purging" do
     context ".purge_queue" do
       before do
-        EvmSpecHelper.create_guid_miq_server_zone
+        EvmSpecHelper.local_miq_server
       end
       let(:purge_time) { (Time.zone.now + 10).round }
 
@@ -57,6 +57,12 @@ RSpec.describe ContainerQuota do
         assert_unpurged_ids(ContainerQuotaScope, @new_quota_scope.id)
         # This quota item is itself due for purging, but not as part of ContainerQuota::Purging.
         assert_unpurged_ids(ContainerQuotaItem, @new_quota_old_item.id)
+      end
+
+      it "purges associated rows" do
+        described_class.purge(deleted_date)
+        expect(@old_quota.container_quota_scopes.count).to eq(0)
+        expect(@old_quota.all_container_quota_items.count).to eq(0)
       end
     end
   end

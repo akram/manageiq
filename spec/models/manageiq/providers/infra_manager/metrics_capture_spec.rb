@@ -2,10 +2,9 @@ RSpec.describe ManageIQ::Providers::InfraManager::MetricsCapture do
   include Spec::Support::MetricHelper
 
   let(:miq_server) { EvmSpecHelper.local_miq_server }
-  let(:ems) { FactoryBot.create(:ems_vmware, :zone => miq_server.zone) }
+  let(:ems) { FactoryBot.create(:ems_vmware_with_authentication, :zone => miq_server.zone) }
 
   before do
-    MiqRegion.seed
     storages = FactoryBot.create_list(:storage_vmware, 2)
     storages.each_with_index { |st, i| st.perf_capture_enabled = i.even? }
     clusters = FactoryBot.create_list(:ems_cluster, 2, :ext_management_system => ems)
@@ -27,7 +26,7 @@ RSpec.describe ManageIQ::Providers::InfraManager::MetricsCapture do
     it "finds enabled targets" do
       targets = described_class.new(nil, ems).capture_ems_targets
       assert_infra_targets_enabled targets
-      expect(targets.map { |t| t.class.name }).to match_array(%w[ManageIQ::Providers::Vmware::InfraManager::Vm ManageIQ::Providers::Vmware::InfraManager::Host ManageIQ::Providers::Vmware::InfraManager::Host ManageIQ::Providers::Vmware::InfraManager::Vm ManageIQ::Providers::Vmware::InfraManager::Host Storage])
+      expect(targets.map { |t| t.class.name }).to match_array(%w[ManageIQ::Providers::Vmware::InfraManager::Vm ManageIQ::Providers::Vmware::InfraManager::Host ManageIQ::Providers::Vmware::InfraManager::Host ManageIQ::Providers::Vmware::InfraManager::Vm ManageIQ::Providers::Vmware::InfraManager::Host ManageIQ::Providers::Vmware::InfraManager::Storage])
     end
 
     it "finds enabled targets excluding storages" do

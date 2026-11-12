@@ -10,7 +10,7 @@ class ContainerQuota < ApplicationRecord
   # - ContainerQuotaItems can be added/deleted/changed, and we use archiving to
   #   record changes too!
   include ArchivedMixin
-  include_concern 'Purging'
+  include Purging
 
   belongs_to :ext_management_system, :foreign_key => "ems_id"
   belongs_to :container_project
@@ -21,6 +21,7 @@ class ContainerQuota < ApplicationRecord
 
   def disconnect_inv
     return if archived?
+
     _log.info("Archiving Container Quota [#{name}] id [#{id}]")
     # This allows looking only at ContainerQuotaItem created_at..deleted_on
     # without also checking parent ContaineQuota is active.

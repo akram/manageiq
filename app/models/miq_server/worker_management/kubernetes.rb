@@ -20,13 +20,69 @@ class MiqServer::WorkerManagement::Kubernetes < MiqServer::WorkerManagement
     sync_deployment_settings
   end
 
+  def sync_starting_workers
+    starting = MiqWorker.find_all_starting
+
+    # Get a list of pods that aren't currently assigned to MiqWorker records
+    pods_without_workers = current_pods.keys - MiqWorker.server_scope.pluck(:system_uid).compact
+
+    # Non-rails workers cannot set their own miq_worker record to started once they
+    # have finished initializing.  Check for any starting non-rails workers whose
+    # pod is running and mark the miq_worker as started.
+    starting.reject(&:rails_worker?).each do |worker|
+      # If the current worker doesn't have a system_uid assigned then find the first
+      # pod available for our worker type and link them up.
+      if worker.system_uid.nil?
+        system_uid = pods_without_workers.detect { |pod_name| pod_name.start_with?(worker.worker_deployment_name) }
+        if system_uid
+          # We have found a pod for the current worker record so remove the pod from
+          # the list of pods without workers and set the pod name as the system_uid
+          # for the current worker record.
+          pods_without_workers.delete(system_uid)
+          worker.update!(:system_uid => system_uid)
+        else
+          # If we haven't found a pod for this worker record then we need to check
+          # whether it has been starting for too long and should be marked as
+          # not responding.
+          stop_worker(worker, MiqServer::WorkerManagement::NOT_RESPONDING) if exceeded_heartbeat_threshold?(worker)
+          # Without a valid system_uid we cannot run any further logic in this
+          # loop.
+          next
+        end
+      end
+
+      worker_pod = current_pods[worker.system_uid]
+      next if worker_pod.nil?
+
+      worker.update!(:status => MiqWorker::STATUS_STARTED) if worker_pod[:running]
+    end
+
+    starting.reload
+  end
+
+  def sync_stopping_workers
+    stopping = MiqWorker.find_all_stopping
+
+    stopping.reject(&:rails_worker?).each do |worker|
+      next if current_pods.key?(worker[:system_uid])
+
+      worker.update!(:status => MiqWorker::STATUS_STOPPED)
+    end
+
+    stopping.reload
+  end
+
   def enough_resource_to_start_worker?(_worker_class)
     true
   end
 
   def cleanup_orphaned_worker_rows
     unless current_pods.empty?
+      # Any worker rows which have a system_uid that is not in the list of
+      # current pod names, and is not starting (aka hasn't had a system_uid set
+      # yet) should be deleted.
       orphaned_rows = miq_workers.where.not(:system_uid => current_pods.keys)
+                                 .where.not(:status => MiqWorker::STATUSES_STARTING)
       unless orphaned_rows.empty?
         _log.warn("Removing orphaned worker rows without corresponding pods: #{orphaned_rows.collect(&:system_uid).inspect}")
         orphaned_rows.destroy_all
@@ -42,7 +98,7 @@ class MiqServer::WorkerManagement::Kubernetes < MiqServer::WorkerManagement
 
   def failed_deployments(restart_count = 5)
     # TODO: This logic might flag deployments that are hitting memory/cpu limits or otherwise not really 'failed'
-    current_pods.values.select { |h| h[:last_state_terminated] && h.fetch(:container_restarts, 0) > restart_count }.collect { |h| h[:label_name] }
+    current_pods.values.select { |h| h[:last_state_terminated] && h.fetch(:container_restarts, 0) > restart_count }.pluck(:label_name).uniq
   end
 
   def sync_deployment_settings
@@ -52,7 +108,13 @@ class MiqServer::WorkerManagement::Kubernetes < MiqServer::WorkerManagement
 
       if deployment_resource_constraints_changed?(worker)
         _log.info("Constraints changed, patching deployment: [#{worker.worker_deployment_name}]")
-        worker.patch_deployment
+
+        begin
+          worker.patch_deployment
+        rescue => err
+          _log.warn("Failure patching deployment: [#{worker.worker_deployment_name}] for worker: id: [#{worker.id}], system_uid: [#{worker.system_uid}]. Error: [#{err}]... skipping")
+          next
+        end
       end
       checked_deployments << worker.worker_deployment_name
     end
@@ -102,17 +164,29 @@ class MiqServer::WorkerManagement::Kubernetes < MiqServer::WorkerManagement
 
   def start_kube_monitor(resource = :pods)
     require 'http'
-    Thread.new do
-      _log.info("Started new #{resource} monitor thread of #{Thread.list.length} total")
+    require 'concurrent/atomic/event'
+
+    monitor_started = Concurrent::Event.new
+
+    thread = Thread.new do
+      _log.info("Starting new #{resource} monitor thread of #{Thread.list.length} total")
       begin
-        send("monitor_#{resource}")
-      rescue HTTP::ConnectionError => e
+        send(:"monitor_#{resource}", monitor_started)
+      rescue HTTP::ConnectionError, Kubeclient::HttpError => e
         _log.error("Exiting #{resource} monitor thread due to [#{e.class.name}]: #{e}")
       rescue => e
         _log.error("Exiting #{resource} monitor thread after uncaught error")
         _log.log_backtrace(e)
+      ensure
+        monitor_started.set
       end
     end
+
+    monitor_started.wait
+
+    _log.info("Starting new #{resource} monitor thread...Complete")
+
+    thread
   end
 
   def ensure_kube_monitors_started
@@ -122,12 +196,12 @@ class MiqServer::WorkerManagement::Kubernetes < MiqServer::WorkerManagement
       if thread.nil? || !thread.alive?
         if !thread.nil? && thread.status.nil?
           dead_thread = thread
-          send("#{getter}=", nil)
+          send(:"#{getter}=", nil)
           _log.info("Waiting for the #{getter} Monitor Thread to exit...")
           dead_thread.join
         end
 
-        send("#{getter}=", start_kube_monitor(resource))
+        send(:"#{getter}=", start_kube_monitor(resource))
       end
     end
   end
@@ -144,19 +218,23 @@ class MiqServer::WorkerManagement::Kubernetes < MiqServer::WorkerManagement
     @orchestrator ||= ContainerOrchestrator.new
   end
 
-  def monitor_deployments
+  def monitor_deployments(monitor_started)
     loop do
       current_deployments.clear
       resource_version = collect_initial(:deployments)
+
+      monitor_started.set
 
       watch_for_events(:deployments, resource_version)
     end
   end
 
-  def monitor_pods
+  def monitor_pods(monitor_started)
     loop do
       current_pods.clear
       resource_version = collect_initial(:pods)
+
+      monitor_started.set
 
       # watch_for_events doesn't return unless an error caused us to break out of it, so we'll start over again
       watch_for_events(:pods, resource_version)
@@ -164,18 +242,18 @@ class MiqServer::WorkerManagement::Kubernetes < MiqServer::WorkerManagement
   end
 
   def collect_initial(resource = :pods)
-    objects = orchestrator.send("get_#{resource}")
-    objects.each { |p| send("save_#{resource.to_s.singularize}", p) }
+    objects = orchestrator.send(:"get_#{resource}")
+    objects.each { |p| send(:"save_#{resource.to_s.singularize}", p) }
     objects.resourceVersion
   end
 
   def watch_for_events(resource, resource_version)
-    orchestrator.send("watch_#{resource}", resource_version).each do |event|
+    orchestrator.send(:"watch_#{resource}", resource_version).each do |event|
       case event.type.downcase
       when "added", "modified"
-        send("save_#{resource.to_s.singularize}", event.object)
+        send(:"save_#{resource.to_s.singularize}", event.object)
       when "deleted"
-        send("delete_#{resource.to_s.singularize}", event.object)
+        send(:"delete_#{resource.to_s.singularize}", event.object)
       when "error"
         if (status = event.object)
           # ocp 3 appears to return 'ERROR' watch events with the object containing the 410 code and "Gone" reason like below:
@@ -211,6 +289,7 @@ class MiqServer::WorkerManagement::Kubernetes < MiqServer::WorkerManagement
     ch[:label_name]            = pod.metadata.labels.name
     ch[:last_state_terminated] = pod.status.containerStatuses.any? { |cs| cs.lastState.terminated }
     ch[:container_restarts]    = pod.status.containerStatuses.sum { |cs| cs.restartCount.to_i }
+    ch[:running]               = pod.status.phase == "Running" && pod.status.containerStatuses.all? { |cs| cs.ready && cs.started }
 
     name = pod.metadata.name
     current_pods[name] ||= ch
@@ -219,5 +298,9 @@ class MiqServer::WorkerManagement::Kubernetes < MiqServer::WorkerManagement
 
   def delete_pod(pod)
     current_pods.delete(pod.metadata.name)
+  end
+
+  def get_pod(pod_name)
+    orchestrator.get_pods.find { |pod| pod.metadata[:name] == pod_name }
   end
 end

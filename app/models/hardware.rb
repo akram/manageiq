@@ -76,17 +76,12 @@ class Hardware < ApplicationRecord
                    .select(:id, :device_type, :location, :address)
                    .collect { |rec| [rec.id, [rec.device_type, rec.location, rec.address]] }
 
-    if parent.vendor == "redhat"
-      deletes[:disk] = parent.hardware.disks.select(:id, :device_type, :location)
-                     .collect { |rec| [rec.id, [rec.device_type, "0:#{rec.location}"]] }
-    else
-      deletes[:disk] = parent.hardware.disks.select(:id, :device_type, :location)
-                     .collect { |rec| [rec.id, [rec.device_type, rec.location]] }
-    end
+    deletes[:disk] = parent.hardware.disks.select(:id, :device_type, :location)
+                           .collect { |rec| [rec.id, [rec.device_type, rec.location]] }
 
     xmlNode.root.each_recursive do |e|
       begin
-        parent.hardware.send("m_#{e.name}", parent, e, deletes) if parent.hardware.respond_to?("m_#{e.name}")
+        parent.hardware.send(:"m_#{e.name}", parent, e, deletes) if parent.hardware.respond_to?(:"m_#{e.name}")
       rescue => err
         _log.warn(err.to_s)
       end
@@ -114,6 +109,7 @@ class Hardware < ApplicationRecord
   end)
 
   def v_pct_free_disk_space
+    return self["v_pct_free_disk_space"] if has_attribute?("v_pct_free_disk_space")
     return nil if disk_free_space.nil? || disk_capacity.nil? || disk_capacity.zero?
 
     (disk_free_space.to_f / disk_capacity * 100).round(2)
@@ -126,6 +122,8 @@ class Hardware < ApplicationRecord
   end)
 
   def v_pct_used_disk_space
+    return self["v_pct_used_disk_space"] if has_attribute?("v_pct_used_disk_space")
+
     percent_free = v_pct_free_disk_space
     100 - percent_free if percent_free
   end
@@ -147,8 +145,8 @@ class Hardware < ApplicationRecord
 
   virtual_attribute :provisioned_storage, :integer, :arel => (lambda do |t|
     t.grouping(
-      t.grouping(Arel::Nodes::NamedFunction.new('COALESCE', [arel_attribute(:allocated_disk_storage), 0])) +
-      t.grouping(Arel::Nodes::NamedFunction.new('COALESCE', [t[:memory_mb], 0])) * 1.megabyte
+      t.grouping(t.coalesce([t[:allocated_disk_storage], 0])) +
+      (t.grouping(t.coalesce([t[:memory_mb], 0])) * 1.megabyte)
     )
   end)
 

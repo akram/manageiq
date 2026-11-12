@@ -1,6 +1,6 @@
 RSpec.describe MiqServer::WorkerManagement::Systemd do
   let(:units)           { [] }
-  let(:server)          { EvmSpecHelper.create_guid_miq_server_zone.second }
+  let(:server)          { EvmSpecHelper.local_miq_server }
   let(:systemd_manager) { double("DBus::Systemd::Manager") }
 
   before do
@@ -11,28 +11,105 @@ RSpec.describe MiqServer::WorkerManagement::Systemd do
     allow(systemd_manager).to receive(:units).and_return(units)
   end
 
-  context "#cleanup_failed_systemd_services" do
+  context "#cleanup_failed_workers" do
+    let!(:generic_worker) { FactoryBot.create(:miq_generic_worker, :guid => "68400a7e-1747-4f10-be2a-d0fc91b705ca", :miq_server => server) }
+    let(:service_name) { "manageiq-generic@#{generic_worker.guid}.service" }
+
     before { server.worker_manager.sync_from_system }
 
-    context "with no failed services" do
-      let(:units) { [{:name => "manageiq-generic@68400a7e-1747-4f10-be2a-d0fc91b705ca.service", :description => "ManageIQ Generic Worker", :load_state => "loaded", :active_state => "active", :sub_state => "plugged", :job_id => 0, :job_type => "", :job_object_path => "/"}] }
+    context "with no failed or dead services" do
+      let(:units) { [{:name => service_name, :description => "ManageIQ Generic Worker", :load_state => "loaded", :active_state => "active", :sub_state => "plugged", :job_id => 0, :job_type => "", :job_object_path => "/"}] }
 
       it "doesn't call DisableUnitFiles" do
         expect(systemd_manager).not_to receive(:DisableUnitFiles)
-        server.worker_manager.cleanup_failed_systemd_services
+        server.worker_manager.cleanup_failed_workers
+      end
+
+      it "doesn't call Reload" do
+        expect(systemd_manager).not_to receive(:Reload)
+        server.worker_manager.cleanup_failed_workers
       end
     end
 
     context "with failed services" do
-      let(:service_name) { "manageiq-generic@68400a7e-1747-4f10-be2a-d0fc91b705ca.service" }
       let(:units) { [{:name => service_name, :description => "ManageIQ Generic Worker", :load_state => "loaded", :active_state => "failed", :sub_state => "plugged", :job_id => 0, :job_type => "", :job_object_path => "/"}] }
+      let!(:starting_worker) { FactoryBot.create(:miq_generic_worker, :miq_server => server, :status => "creating", :system_uid => service_name) }
 
       it "calls DisableUnitFiles with the service name" do
         expect(systemd_manager).to receive(:StopUnit).with(service_name, "replace")
         expect(systemd_manager).to receive(:ResetFailedUnit).with(service_name)
         expect(systemd_manager).to receive(:DisableUnitFiles).with([service_name], false)
+        expect(systemd_manager).to receive(:Reload)
 
-        server.worker_manager.cleanup_failed_systemd_services
+        server.worker_manager.cleanup_failed_workers
+      end
+
+      it "marks any active workers as stopped" do
+        expect(systemd_manager).to receive(:StopUnit).with(service_name, "replace")
+        expect(systemd_manager).to receive(:ResetFailedUnit).with(service_name)
+        expect(systemd_manager).to receive(:DisableUnitFiles).with([service_name], false)
+        expect(systemd_manager).to receive(:Reload)
+
+        server.worker_manager.cleanup_failed_workers
+
+        expect(starting_worker.reload.status).to eq("stopped")
+      end
+    end
+
+    context "with dead services" do
+      let(:units) do
+        [
+          {:name => service_name, :description => "ManageIQ Generic Worker", :load_state => "loaded", :active_state => "inactive", :sub_state => "dead", :job_id => 0, :job_type => "", :job_object_path => "/"}
+        ]
+      end
+
+      it "calls DisableUnitFiles with the service name" do
+        expect(systemd_manager).to receive(:StopUnit).with(service_name, "replace")
+        expect(systemd_manager).to receive(:ResetFailedUnit).with(service_name)
+        expect(systemd_manager).to receive(:DisableUnitFiles).with([service_name], false)
+        expect(systemd_manager).to receive(:Reload)
+
+        server.worker_manager.cleanup_failed_workers
+      end
+    end
+
+    context "with multiple dead services" do
+      let(:service_name_2) { "manageiq-ui@cfe2c489-5c93-4b77-8620-cf6b1d3ec595.service" }
+      let(:units) do
+        [
+          {:name => service_name, :description => "ManageIQ Generic Worker", :load_state => "loaded", :active_state => "inactive", :sub_state => "dead", :job_id => 0, :job_type => "", :job_object_path => "/"},
+          {:name => service_name_2, :description => "ManageIQ UI Worker", :load_state => "loaded", :active_state => "inactive", :sub_state => "dead", :job_id => 0, :job_type => "", :job_object_path => "/"}
+        ]
+      end
+
+      it "calls DisableUnitFiles with all dead service names" do
+        expect(systemd_manager).to receive(:StopUnit).with(service_name, "replace")
+        expect(systemd_manager).to receive(:ResetFailedUnit).with(service_name)
+        expect(systemd_manager).to receive(:StopUnit).with(service_name_2, "replace")
+        expect(systemd_manager).to receive(:ResetFailedUnit).with(service_name_2)
+        expect(systemd_manager).to receive(:DisableUnitFiles).with([service_name, service_name_2], false)
+        expect(systemd_manager).to receive(:Reload)
+
+        server.worker_manager.cleanup_failed_workers
+      end
+    end
+
+    context "with mixed service states" do
+      let(:units) do
+        [
+          {:name => service_name, :description => "ManageIQ Generic Worker", :load_state => "loaded", :active_state => "inactive", :sub_state => "dead", :job_id => 0, :job_type => "", :job_object_path => "/"},
+          {:name => "manageiq-ui@cfe2c489-5c93-4b77-8620-cf6b1d3ec595.service", :description => "ManageIQ UI Worker", :load_state => "loaded", :active_state => "active", :sub_state => "running", :job_id => 0, :job_type => "", :job_object_path => "/"},
+          {:name => "manageiq-event_catcher@abc123.service", :description => "ManageIQ Event Catcher", :load_state => "loaded", :active_state => "failed", :sub_state => "failed", :job_id => 0, :job_type => "", :job_object_path => "/"}
+        ]
+      end
+
+      it "only disables dead services" do
+        expect(systemd_manager).to receive(:StopUnit).with(service_name, "replace")
+        expect(systemd_manager).to receive(:ResetFailedUnit).with(service_name)
+        expect(systemd_manager).to receive(:DisableUnitFiles).with([service_name], false)
+        expect(systemd_manager).to receive(:Reload)
+
+        server.worker_manager.cleanup_failed_workers
       end
     end
   end
@@ -50,6 +127,149 @@ RSpec.describe MiqServer::WorkerManagement::Systemd do
 
     it "filters out non-miq services" do
       expect(server.worker_manager.send(:miq_services).count).to eq(2)
+    end
+  end
+
+  context "#sync_starting_workers" do
+    let!(:worker) { FactoryBot.create(:miq_generic_worker, :status => status, :miq_server => server, :system_uid => "manageiq-generic@68400a7e-1747-4f10-be2a-d0fc91b705ca.service") }
+
+    context "with no starting workers" do
+      let(:status) { MiqWorker::STATUS_STARTED }
+
+      it "doesn't update the worker record" do
+        expect(worker).not_to receive(:update!)
+
+        expect(server.worker_manager.sync_starting_workers).to be_empty
+      end
+    end
+
+    context "with a starting worker" do
+      let(:status) { MiqWorker::STATUS_STARTING }
+
+      before { allow(worker.class).to receive(:rails_worker?).and_return(rails_worker) }
+
+      context "with a rails worker" do
+        let(:rails_worker) { true }
+
+        it "doesn't update the worker record" do
+          expect(worker).not_to receive(:update!)
+
+          expect(server.worker_manager.sync_starting_workers).to include(worker)
+        end
+      end
+
+      context "with a non-rails worker" do
+        let(:rails_worker) { false }
+
+        context "with no systemd unit" do
+          it "doesn't update the worker record" do
+            expect(worker).not_to receive(:update!)
+
+            expect(server.worker_manager.sync_starting_workers).to include(worker)
+          end
+        end
+
+        context "with a systemd unit" do
+          context "that isn't active yet" do
+            let(:units) do
+              [
+                {
+                  :name         => "manageiq-generic@68400a7e-1747-4f10-be2a-d0fc91b705ca.service",
+                  :load_state   => "loaded",
+                  :active_state => "active",
+                  :sub_state    => "start-pre"
+                }
+              ]
+            end
+
+            it "doesn't update the worker record" do
+              expect(server.worker_manager.sync_starting_workers).to include(worker)
+
+              expect(worker.reload.status).to eq(MiqWorker::STATUS_STARTING)
+            end
+          end
+
+          context "that is running" do
+            let(:units) do
+              [
+                {
+                  :name         => "manageiq-generic@68400a7e-1747-4f10-be2a-d0fc91b705ca.service",
+                  :load_state   => "loaded",
+                  :active_state => "active",
+                  :sub_state    => "running"
+                }
+              ]
+            end
+
+            it "sets the worker record to started" do
+              expect(server.worker_manager.sync_starting_workers).to be_empty
+
+              expect(worker.reload.status).to eq(MiqWorker::STATUS_STARTED)
+            end
+          end
+        end
+      end
+    end
+  end
+
+  context "#sync_stopping_workers" do
+    let!(:worker) { FactoryBot.create(:miq_generic_worker, :status => status, :miq_server => server, :system_uid => "manageiq-generic@68400a7e-1747-4f10-be2a-d0fc91b705ca.service") }
+
+    context "with no stopping workers" do
+      let(:status) { MiqWorker::STATUS_STARTED }
+
+      it "doesn't update the worker record" do
+        expect(worker).not_to receive(:update!)
+
+        expect(server.worker_manager.sync_stopping_workers).to be_empty
+      end
+    end
+
+    context "with a stopping worker" do
+      let(:status) { MiqWorker::STATUS_STOPPING }
+
+      before { allow(worker.class).to receive(:rails_worker?).and_return(rails_worker) }
+
+      context "with a rails worker" do
+        let(:rails_worker) { true }
+
+        it "doesn't update the worker record" do
+          expect(worker).not_to receive(:update!)
+
+          expect(server.worker_manager.sync_stopping_workers).to include(worker)
+        end
+      end
+
+      context "with a non-rails worker" do
+        let(:rails_worker) { false }
+
+        context "with a systemd unit" do
+          let(:units) do
+            [
+              {
+                :name         => "manageiq-generic@68400a7e-1747-4f10-be2a-d0fc91b705ca.service",
+                :load_state   => "loaded",
+                :active_state => "active",
+                :sub_state    => "running"
+              }
+            ]
+          end
+
+          it "doesn't update the worker record" do
+            expect(worker).not_to receive(:update!)
+
+            expect(server.worker_manager.sync_stopping_workers).to include(worker)
+          end
+        end
+
+        context "with a systemd unit that has exited" do
+          it "sets the worker record to stopped" do
+            expect(server.worker_manager.sync_stopping_workers).to be_empty
+
+            expect(worker.reload.status).to eq(MiqWorker::STATUS_STOPPED)
+          end
+        end
+      end
     end
   end
 

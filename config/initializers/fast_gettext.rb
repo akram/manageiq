@@ -10,9 +10,10 @@ begin
   load_paths.sort_by! { |p| File.basename(p) } # consistently sort en_foo.yml *after* en.yml
   I18n.load_path += load_paths
 
+  require 'vmdb/fast_gettext_helper'
   Vmdb::FastGettextHelper.register_locales
   Vmdb::FastGettextHelper.register_human_localenames
-  gettext_options = %w(--sort-by-msgid --location --no-wrap)
+  gettext_options = %w[--sort-by-msgid --location --no-wrap]
   Rails.application.config.gettext_i18n_rails.msgmerge = gettext_options + ["--no-fuzzy-matching"]
   Rails.application.config.gettext_i18n_rails.xgettext = gettext_options + ["--add-comments=TRANSLATORS"]
 

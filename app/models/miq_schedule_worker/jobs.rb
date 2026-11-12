@@ -14,7 +14,7 @@ class MiqScheduleWorker::Jobs
   end
 
   def miq_server_audit_managed_resources
-    queue_work(:class_name  => "MiqServer", :method_name => "audit_managed_resources", :queue_name => 'miq_server', :task_id => "audit_managed_resources", :server_guid => MiqServer.my_guid)
+    queue_work(:class_name  => "MiqServer", :method_name => "report_audit_details", :queue_name => 'miq_server', :task_id => "report_audit_details", :server_guid => MiqServer.my_guid)
   end
 
   def vmdb_database_connection_log_statistics
@@ -22,7 +22,7 @@ class MiqScheduleWorker::Jobs
   end
 
   def job_check_jobs_for_timeout
-    queue_work_on_each_zone(:class_name  => "Job", :method_name => "check_jobs_for_timeout")
+    queue_work_on_each_zone(:class_name => "Job", :method_name => "check_jobs_for_timeout")
   end
 
   def retirement_check
@@ -39,11 +39,16 @@ class MiqScheduleWorker::Jobs
   end
 
   def session_check_session_timeout
-    queue_work(:class_name  => "Session", :method_name => "check_session_timeout", :server_guid => MiqServer.my_guid)
+    queue_work(:class_name => "Session", :method_name => "check_session_timeout", :server_guid => MiqServer.my_guid)
   end
 
   def job_check_for_evm_snapshots(job_not_found_delay)
-    queue_work_on_each_zone(:class_name  => "Job", :method_name => "check_for_evm_snapshots", :args => [job_not_found_delay])
+    queue_work_on_each_zone_with_active_role(
+      "smartstate",
+      :class_name  => "Job",
+      :method_name => "check_for_evm_snapshots",
+      :args        => [job_not_found_delay]
+    )
   end
 
   def vm_scan_dispatcher_dispatch
@@ -58,9 +63,9 @@ class MiqScheduleWorker::Jobs
     end
   end
 
-  def image_import_pvc_to_pvs_dispatcher_dispatch
-    if ManageIQ::Providers::IbmCloud::PowerVirtualServers::CloudManager::ImageImportWorkflow::ImportDispatcher.waiting?
-      queue_work(:class_name => "ManageIQ::Providers::IbmCloud::PowerVirtualServers::CloudManager::ImageImportWorkflow::ImportDispatcher", :method_name => "dispatch", :task_id => "job_dispatcher", :priority => MiqQueue::HIGH_PRIORITY)
+  def image_import_dispatcher_dispatch
+    if ManageIQ::Providers::ImageImportJob::Dispatcher.waiting?
+      queue_work(:class_name => "ManageIQ::Providers::ImageImportJob::Dispatcher", :method_name => "dispatch", :task_id => "job_dispatcher", :priority => MiqQueue::HIGH_PRIORITY)
     end
   end
 
@@ -73,7 +78,7 @@ class MiqScheduleWorker::Jobs
   end
 
   def storage_scan_timer
-    queue_work(:class_name  => "Storage", :method_name => "scan_timer")
+    queue_work(:class_name => "Storage", :method_name => "scan_timer")
   end
 
   def metric_capture_perf_capture_timer
@@ -83,7 +88,6 @@ class MiqScheduleWorker::Jobs
         :method_name => "perf_capture_timer",
         :args        => [ems.id],
         :role        => "ems_metrics_coordinator",
-        :priority    => MiqQueue::HIGH_PRIORITY,
         :state       => ["ready", "dequeue"]
       )
     end
@@ -99,6 +103,10 @@ class MiqScheduleWorker::Jobs
 
   def drift_state_purge_timer
     queue_work(:class_name => "DriftState", :method_name => "purge_timer", :zone => nil)
+  end
+
+  def audit_event_purge_timer
+    queue_work(:class_name => "AuditEvent", :method_name => "purge_timer", :zone => nil)
   end
 
   def event_stream_purge_timer
@@ -123,6 +131,10 @@ class MiqScheduleWorker::Jobs
 
   def miq_report_result_purge_timer
     queue_work(:class_name => "MiqReportResult", :method_name => "purge_timer", :zone => nil)
+  end
+
+  def request_log_purge_timer
+    queue_work(:class_name => "RequestLog", :method_name => "purge_timer", :zone => nil)
   end
 
   def archived_entities_purge_timer
@@ -185,6 +197,9 @@ class MiqScheduleWorker::Jobs
   end
 
   def generate_chargeback_for_service(args = {})
+    # Only queue chargeback report generation if the reporting role is enabled for any server in the region.
+    return unless MiqRegion.my_region.role_assigned?("reporting")
+
     queue_work(:class_name => "Service", :method_name => "queue_chargeback_reports", :zone => nil, :args => args)
   end
 
@@ -196,12 +211,19 @@ class MiqScheduleWorker::Jobs
 
   def queue_work(options)
     return if options.nil?
-    options = {:zone => MiqServer.my_zone, :priority => MiqScheduleWorker::Runner::SCHEDULE_MEDIUM_PRIORITY}.merge(options)
+
+    options = {:zone => MiqServer.my_zone, :priority => MiqQueue::MEDIUM_PRIORITY}.merge(options)
     # always has class_name, method_name, zone, priority [often has role]
     MiqQueue.put_unless_exists(options)
   end
 
   def queue_work_on_each_zone(options)
     Zone.in_my_region.each { |z| queue_work(options.merge(:zone => z.name)) }
+  end
+
+  def queue_work_on_each_zone_with_active_role(role_name, options)
+    Zone.in_my_region
+        .with_active_role(role_name)
+        .each { |z| queue_work(options.merge(:zone => z.name)) }
   end
 end

@@ -1,12 +1,12 @@
 module MiqReport::Generator
   extend ActiveSupport::Concern
 
-  include_concern 'Aggregation'
-  include_concern 'Async'
-  include_concern 'Html'
-  include_concern 'Sorting'
-  include_concern 'Trend'
-  include_concern 'Utilization'
+  include Aggregation
+  include Async
+  include Html
+  include Sorting
+  include Trend
+  include Utilization
 
   DATE_TIME_BREAK_SUFFIXES = [
     [N_("Hour"),              "hour"],
@@ -28,7 +28,7 @@ module MiqReport::Generator
     end
 
     def get_col_break_suffixes(col)
-      col_type = MiqExpression.parse_field_or_tag(col).try(:column_type)
+      col_type = MiqExpression::Target.parse(col).column_type
       case col_type
       when :date
         date_time_break_suffixes.select { |_name, suffix| !suffix.to_s.starts_with?("hour") }
@@ -88,27 +88,12 @@ module MiqReport::Generator
     include_as_hash(include.presence || invent_report_includes)
   end
 
-  def polymorphic_includes
-    @polymorphic_includes ||= begin
-      top_level_rels = Array(get_include.try(:keys)) + Array(get_include_for_find.try(:keys))
-
-      top_level_rels.uniq.each_with_object([]) do |assoc, polymorphic_rels|
-        reflection = db_klass.reflect_on_association(assoc)
-        polymorphic_rels << assoc if reflection && reflection.polymorphic?
-      end
-    end
+  def get_ar_includes
+    include_for_find
   end
 
-  def get_include_for_find_rbac
-    polymorphic_includes.each_with_object(get_include_for_find.dup) do |key, includes|
-      includes.delete(key)
-    end
-  end
-
-  def get_include_rbac
-    polymorphic_includes.each_with_object(get_include.dup) do |key, includes|
-      includes.delete(key)
-    end
+  def get_ar_references
+    db_class.prune_references(get_include)
   end
 
   def invent_includes
@@ -118,14 +103,14 @@ module MiqReport::Generator
   # would like this format to go away
   # will go away when we drop build_reportable_data
   def invent_report_includes
-    return {} unless col_order
-    col_order.each_with_object({}) do |col, ret|
-      next unless col.include?(".")
+    (Array(col_order) + Array(sortby)).each_with_object({}) do |col, ret|
+      next if !col.include?(".") || col.include?("virtual_custom")
+
       *rels, column = col.split(".")
-      if col !~ /managed\./ && col !~ /virtual_custom/
-        (rels.inject(ret) { |h, rel| h[rel] ||= {} }["columns"] ||= []) << column
-      end
-    end
+      dest = rels.inject(ret) { |h, rel| (h["include"] ||= {})[rel] ||= {} }["columns"] ||= []
+      # sortby tends to be a duplicate. So suppress duplicates for all
+      dest << column unless dest.include?(column)
+    end["include"]
   end
 
   def include_as_hash(includes = include, klass = db_class, klass_cols = cols)
@@ -213,13 +198,14 @@ module MiqReport::Generator
 
   def _generate_table(options = {})
     return build_table_from_report(options) if db == self.class.name # Build table based on data from passed in report object
+
     _generate_table_prep
 
     results = if custom_results_method
                 generate_custom_method_results(options)
               elsif performance
                 generate_performance_results(options)
-              elsif interval == 'daily' && db_klass <= MetricRollup
+              elsif interval == 'daily' && db_class <= MetricRollup
                 generate_daily_metric_rollup_results(options)
               elsif interval
                 generate_interval_metric_results(options)
@@ -237,9 +223,9 @@ module MiqReport::Generator
   end
 
   def generate_custom_method_results(options = {})
-    if db_klass.respond_to?(custom_results_method)
+    if db_class.respond_to?(custom_results_method)
       # Use custom method in DB class to get report results if defined
-      results, ext = db_klass.send(custom_results_method, db_options[:options].merge(:userid      => options[:userid],
+      results, ext = db_class.send(custom_results_method, db_options[:options].merge(:userid      => options[:userid],
                                                                                      :ext_options => ext_options,
                                                                                      :report_cols => cols))
     elsif respond_to?(custom_results_method)
@@ -261,7 +247,7 @@ module MiqReport::Generator
       results, extras[:group_by_tag_cols], extras[:group_by_tags] = db_class.group_by_tags(
         db_class.find_entries(ext_options).where(where_clause).where(options[:where_clause]),
         :category  => performance[:group_by_category],
-        :cat_model => options[:cat_model],
+        :cat_model => options[:cat_model]
       )
       build_correlate_tag_cols
     end
@@ -283,12 +269,12 @@ module MiqReport::Generator
       conditions.preprocess_options = {:vim_performance_daily_adhoc => (time_profile && time_profile.rollup_daily_metrics)}
     end
 
-    results = Metric::Helper.find_for_interval_name('daily', time_profile || tz, db_klass)
+    results = Metric::Helper.find_for_interval_name('daily', time_profile || tz, db_class)
                             .where(where_clause)
                             .where(options[:where_clause])
                             .where(:timestamp => performance_report_time_range)
-                            .includes(get_include_for_find)
-                            .references(db_klass.includes_to_references(get_include))
+                            .preload(get_ar_includes)
+                            .eager_load(get_ar_references)
                             .limit(options[:limit])
     results = Rbac.filtered(results, :class        => db,
                                      :filter       => conditions,
@@ -299,11 +285,11 @@ module MiqReport::Generator
 
   # Ad-hoc performance reports
   def generate_interval_metric_results(options = {})
-    results = db_klass.with_interval_and_time_range(interval, performance_report_time_range)
+    results = db_class.with_interval_and_time_range(interval, performance_report_time_range)
                       .where(where_clause)
                       .where(options[:where_clause])
-                      .includes(get_include_for_find)
-                      .references(db_klass.includes_to_references(get_include))
+                      .preload(get_ar_includes)
+                      .eager_load(get_ar_references)
                       .limit(options[:limit])
 
     # Rbac will only add miq_expression for hourly report. It will not work properly for daily because many values are rolled up from hourly.
@@ -336,13 +322,13 @@ module MiqReport::Generator
     rbac_opts = options.merge(
       :targets          => targets,
       :filter           => conditions,
-      :include_for_find => get_include_for_find_rbac,
-      :references       => get_include_rbac,
+      :include_for_find => get_ar_includes,
+      :references       => get_ar_references,
       :skip_counts      => true
     )
 
     ## add in virtual attributes that can be calculated from sql
-    rbac_opts[:extra_cols] = va_sql_cols unless va_sql_cols.blank?
+    rbac_opts[:extra_cols] = va_sql_cols if va_sql_cols.present?
     rbac_opts[:use_sql_view] = if db_options.nil? || db_options[:use_sql_view].nil?
                                  MiqReport.default_use_sql_view
                                else
@@ -409,12 +395,12 @@ module MiqReport::Generator
 
   def build_table(data, _db, options = {})
     data = data.to_a
-    objs = data[0] && data[0].kind_of?(Integer) ? db_klass.where(:id => data) : data.compact
+    objs = data[0] && data[0].kind_of?(Integer) ? db_class.where(:id => data) : data.compact
 
     remove_loading_relations_for_virtual_custom_attributes
 
     # Add resource columns to performance reports cols and col_order arrays for widget click thru support
-    if db_klass.to_s.ends_with?("Performance")
+    if db_class.to_s.ends_with?("Performance")
       res_cols = ['resource_name', 'resource_type', 'resource_id']
       self.cols = (cols + res_cols).uniq
       orig_col_order = col_order.dup
@@ -491,7 +477,7 @@ module MiqReport::Generator
   end
 
   def generate_rows_from_data(data)
-    data.inject([]) do |arr, d|
+    data.each_with_object([]) do |d, arr|
       generate_rows.each do |gen_row|
         row = {}
         gen_row.each_with_index do |col_def, col_idx|
@@ -500,7 +486,6 @@ module MiqReport::Generator
         end
         arr << row
       end
-      arr
     end
   end
 
@@ -509,9 +494,10 @@ module MiqReport::Generator
       unless data.key?(col_def[:col_name])
         raise _("Column '%{name} does not exist in data") % {:name => col_def[:col_name]}
       end
-      return col_def.key?(:function) ? apply_col_function(col_def, data) : data[col_def[:col_name]]
+
+      col_def.key?(:function) ? apply_col_function(col_def, data) : data[col_def[:col_name]]
     else
-      return col_def
+      col_def
     end
   end
 
@@ -524,9 +510,10 @@ module MiqReport::Generator
       unless data.key?(col_def[:pct_col_name])
         raise _("Column '%{name} does not exist in data") % {:name => gen_row[:pct_col_name]}
       end
+
       col_val = data[col_def[:col_name]] || 0
       pct_val = data[col_def[:pct_col_name]] || 0
-      return pct_val == 0 ? 0 : (col_val / pct_val * 100.0)
+      pct_val == 0 ? 0 : (col_val / pct_val * 100.0)
     else
       raise _("Column function '%{name}' not supported") % {:name => col_def[:function]}
     end
@@ -534,7 +521,7 @@ module MiqReport::Generator
 
   def build_correlate_tag_cols
     tags2desc = {}
-    arr = self.cols.inject([]) do |a, c|
+    arr = self.cols.each_with_object([]) do |c, a|
       self.extras[:group_by_tag_cols].each do |tc|
         tag = tc[(c.length + 1)..-1]
         if tc.starts_with?(c)
@@ -549,9 +536,8 @@ module MiqReport::Generator
           a << [tc, tags2desc[tag]]
         end
       end
-      a
     end
-    arr.sort! { |a, b| a[1] <=> b[1] }
+    arr.sort_by! { |a| a[1] }
     while arr.first[1] == "[None]"
       arr.push(arr.shift)
     end unless arr.blank? || (arr.first[1] == "[None]" && arr.last[1] == "[None]")
@@ -578,7 +564,7 @@ module MiqReport::Generator
     klass = recs.first.class
     last_rec = nil
 
-    results = recs.sort_by { |r| [r.resource_type, r.resource_id.to_s, r.timestamp.iso8601] }.inject([]) do |arr, rec|
+    recs.sort_by { |r| [r.resource_type, r.resource_id.to_s, r.timestamp.iso8601] }.each_with_object([]) do |rec, arr|
       last_rec ||= rec
       while (rec.timestamp - last_rec.timestamp) > int
         base_attrs = last_rec.attributes.reject { |k, _v| !base_cols.include?(k) }
@@ -588,13 +574,12 @@ module MiqReport::Generator
       end
       arr << rec
       last_rec = rec
-      arr
     end
-    results
   end
 
   def build_apply_time_profile(results)
     return unless time_profile
+
     # Apply time profile if one was provided
     results.each { |rec| rec.apply_time_profile(time_profile) if rec.respond_to?(:apply_time_profile) }
   end
@@ -646,28 +631,27 @@ module MiqReport::Generator
     data = sort_table(data, rpt_options[:pivot][:group_cols].collect(&:to_s), :order => :ascending)
 
     # build grouping options for subtotal
-    options = col_order.inject({}) do |h, col|
+    options = col_order.each_with_object({}) do |col, h|
       next(h) unless col.include?("__")
 
       c, g = col.split("__")
       h[c] ||= {}
       h[c][:grouping] ||= []
       h[c][:grouping] << g.to_sym
-      h
     end
 
-    group_key =  rpt_options[:pivot][:group_cols]
+    group_key = rpt_options[:pivot][:group_cols]
     data = generate_subtotals(data, group_key, options)
     data.inject([]) do |a, (k, v)|
       next(a) if k == :_total_
-      row = col_order.inject({}) do |h, col|
+
+      row = col_order.each_with_object({}) do |col, h|
         if col.include?("__")
           c, g = col.split("__")
           h[col] = v[g.to_sym][c]
         else
           h[col] = v[:row][col]
         end
-        h
       end
       a << row
     end
@@ -682,6 +666,7 @@ module MiqReport::Generator
 
   def build_cols_from_include(hash, parent_association = nil)
     return [] if hash.blank?
+
     hash.inject([]) do |a, (k, v)|
       full_path = get_full_path(parent_association, k)
       v["columns"].each { |c| a << get_full_path(full_path, c) } if v.key?("columns")
@@ -731,6 +716,7 @@ module MiqReport::Generator
         {:only => options[:only], :except => options[:except]}
       end
     return {} unless only_or_except
+
     attrs = {}
     options[:only].each do |a|
       if self.class.is_trend_column?(a)
@@ -739,9 +725,8 @@ module MiqReport::Generator
         attrs[a] = rec.send(a) if rec.respond_to?(a)
       end
     end
-    attrs = attrs.inject({}) do |h, (k, v)|
+    attrs = attrs.each_with_object({}) do |(k, v), h|
       h["#{options[:qualify_attribute_names]}.#{k}"] = v
-      h
     end if options[:qualify_attribute_names]
     attrs
   end
@@ -761,7 +746,7 @@ module MiqReport::Generator
         assoc_options = {:qualify_attribute_names => full_path, :only => includes[association]["columns"]}
       end
 
-      if association == "categories" || association == "managed"
+      if ["categories", "managed"].include?(association)
         association_objects = []
         assochash = {}
         @descriptions_by_tag_id ||= Classification.is_entry.each_with_object({}) do |c, h|
@@ -773,6 +758,7 @@ module MiqReport::Generator
           entry[:obj].tags.each do |t|
             next unless t.name.starts_with?("/managed/#{c}/")
             next unless @descriptions_by_tag_id.key?(t.id)
+
             entarr << @descriptions_by_tag_id[t.id]
           end
           assochash[full_path + "." + c] = entarr unless entarr.empty?
@@ -796,7 +782,7 @@ module MiqReport::Generator
           data_records << existing_record
         else
           association_objects.each do |obj|
-            if association == "categories" || association == "managed"
+            if ["categories", "managed"].include?(association)
               association_records = [obj]
             else
               association_records = build_reportable_data(obj, assoc_options, full_path)
@@ -856,6 +842,7 @@ module MiqReport::Generator
       unless res_opts[:at].kind_of?(Numeric)
         raise _("Expected scheduled time 'at' to be 'numeric', received '%{type}'") % {:type => res_opts[:at].class}
       end
+
       at = Time.at(res_opts[:at]).utc
     else
       at = res_last_run_on
@@ -896,7 +883,8 @@ module MiqReport::Generator
 
   def append_user_filters_to_title(user)
     return unless user && user.has_filters?
-    self.append_to_title!(" (filtered for #{user.name})")
+
+    append_to_title!(" (filtered for #{user.name})")
   end
 
   def get_time_zone(default_tz = nil)
@@ -915,7 +903,7 @@ module MiqReport::Generator
 
   # Preps the current instance and db class for building a report
   def _generate_table_prep
-    # Make sure the db_klass has the custom_attribute definitions defined for
+    # Make sure the db_class has the custom_attribute definitions defined for
     # the report being built.
     load_custom_attributes
 

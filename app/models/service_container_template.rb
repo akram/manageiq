@@ -5,7 +5,7 @@ class ServiceContainerTemplate < ServiceGeneric
   def preprocess(action, new_options = {})
     return unless action == ResourceAction::PROVISION
 
-    unless new_options.blank?
+    if new_options.present?
       _log.info("Override with new options:")
       $log.log_hashes(new_options)
     end
@@ -87,11 +87,11 @@ class ServiceContainerTemplate < ServiceGeneric
   def parameters_from_dialog
     params =
       options[:dialog].each_with_object({}) do |(attr, val), obj|
-        var_key = attr.sub(/dialog_param_/, '')
+        var_key = attr.sub("dialog_param_", '')
         obj[var_key] = val unless var_key == attr
       end
 
-    params.blank? ? {} : params
+    (params.presence || {})
   end
 
   def project_name(overrides)
@@ -100,10 +100,11 @@ class ServiceContainerTemplate < ServiceGeneric
     existing_name = overrides.delete(:existing_project_name) || dialog_options['dialog_existing_project_name']
     new_project_name = overrides.delete(:new_project_name) || dialog_options['dialog_new_project_name']
 
-    create_project(new_project_name) if new_project_name
-    project_name = new_project_name || existing_name
+    create_project(new_project_name) if new_project_name.present?
+    project_name = new_project_name.presence || existing_name
 
     raise _("A project is required for the container template provisioning") unless project_name
+
     project_name
   end
 

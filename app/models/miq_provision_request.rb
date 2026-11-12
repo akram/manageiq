@@ -1,28 +1,41 @@
 class MiqProvisionRequest < MiqRequest
-  alias_attribute :vm_template,    :source
   alias_attribute :provision_type, :request_type
-  alias_attribute :miq_provisions, :miq_request_tasks
   alias_attribute :src_vm_id,      :source_id
 
   delegate :my_zone, :to => :source
 
-  TASK_DESCRIPTION  = 'VM Provisioning'
+  TASK_DESCRIPTION  = N_('VM Provisioning')
   SOURCE_CLASS_NAME = 'Vm'
-  ACTIVE_STATES     = %w(migrated) + base_class::ACTIVE_STATES
+  ACTIVE_STATES     = %w[migrated] + base_class::ACTIVE_STATES
 
   validates_inclusion_of :request_state,
-                         :in      => %w(pending provisioned finished) + ACTIVE_STATES,
+                         :in      => %w[pending provisioned finished] + ACTIVE_STATES,
                          :message => "should be pending, #{ACTIVE_STATES.join(", ")}, provisioned, or finished"
   validates :source, :presence => true
   validate               :must_have_user
 
   default_value_for :options,      :number_of_vms => 1
-  default_value_for(:src_vm_id)    { |r| r.get_option(:src_vm_id) }
-
-  virtual_column :provision_type, :type => :string
+  default_value_for(:source_id)    { |r| r.get_option(:src_vm_id) || r.get_option(:source_id) }
+  default_value_for :source_type,  "VmOrTemplate"
 
   include MiqProvisionMixin
   include MiqProvisionQuotaMixin
+
+  def vm_template
+    source
+  end
+
+  def vm_template=(object)
+    self.source = object
+  end
+
+  def miq_provisions
+    miq_request_tasks
+  end
+
+  def miq_provisions=(objects)
+    self.miq_request_tasks = objects
+  end
 
   def self.request_task_class_from(attribs)
     source_id = MiqRequestMixin.get_option(:src_vm_id, nil, attribs['options'])
@@ -41,6 +54,7 @@ class MiqProvisionRequest < MiqRequest
     if vm_or_template.ext_management_system.nil?
       raise MiqException::MiqProvisionError, "Source Template/Vm with id [#{source_id}] has no EMS, unable to provision"
     end
+
     vm_or_template
   end
 
@@ -66,6 +80,7 @@ class MiqProvisionRequest < MiqRequest
 
   def update_description_from_tasks
     return unless requested_task_idx.length == 1
+
     update(:description => miq_request_tasks.reload.first.description)
   end
 

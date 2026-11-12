@@ -1,8 +1,5 @@
 class ManageIQ::Providers::EmbeddedAnsible::AutomationManager::Job < ManageIQ::Providers::EmbeddedAutomationManager::OrchestrationStack
   include CiFeatureMixin
-
-  require_nested :Status
-
   belongs_to :ext_management_system, :foreign_key => :ems_id, :class_name => "ManageIQ::Providers::AutomationManager", :inverse_of => false
   belongs_to :playbook, :foreign_key => :configuration_script_base_id, :inverse_of => false
 
@@ -154,7 +151,7 @@ class ManageIQ::Providers::EmbeddedAnsible::AutomationManager::Job < ManageIQ::P
   end
 
   def raw_stdout_txt
-    raw_stdout_json.collect { |j| j["stdout"] }.join("\n")
+    Ansible::Runner::Response.parsed_stdout_to_human(raw_stdout_json)
   end
 
   def raw_stdout_html

@@ -2,11 +2,13 @@
 #
 
 class MiqWidget < ApplicationRecord
+  include ReadOnlyMixin
+
   default_value_for :enabled, true
   default_value_for :read_only, false
 
   DEFAULT_ROW_COUNT = 5
-  IMPORT_CLASS_NAMES = %w(MiqWidget).freeze
+  IMPORT_CLASS_NAMES = %w[MiqWidget].freeze
 
   belongs_to :resource, :polymorphic => true
   belongs_to :miq_schedule
@@ -19,7 +21,7 @@ class MiqWidget < ApplicationRecord
 
   validates_presence_of   :title, :description
   validates :description, :uniqueness_when_changed => true
-  VALID_CONTENT_TYPES = %w( report chart rss menu )
+  VALID_CONTENT_TYPES = %w[report chart menu]
   validates_inclusion_of :content_type, :in => VALID_CONTENT_TYPES, :message => "should be one of #{VALID_CONTENT_TYPES.join(", ")}"
 
   serialize :visibility
@@ -27,23 +29,31 @@ class MiqWidget < ApplicationRecord
 
   scope :with_content_type, ->(type) { where(:content_type => type) }
 
-  include_concern 'ImportExport'
+  include ImportExport
   include UuidMixin
-  include YAMLImportExportMixin
+  include YamlImportExportMixin
   acts_as_miq_set_member
 
-  WIDGET_DIR =  File.expand_path(File.join(Rails.root, "product/dashboard/widgets"))
   WIDGET_REPORT_SOURCE = "Generated for widget".freeze
 
-  before_destroy :destroy_schedule
+  before_destroy :destroy_schedule, :prevent_orphaned_dashboard
 
   def destroy_schedule
     miq_schedule.destroy if miq_schedule
   end
 
+  def prevent_orphaned_dashboard
+    dependent_sets = MiqWidgetSet.select(:name, :set_data).all.select { |set| set.has_widget_id_member?(id) }
+
+    unless dependent_sets.empty?
+      errors.add(:base, _("Widget: #{title}(#{id}) must be removed from these dashboards before it can be removed: #{dependent_sets.collect(&:name).join(", ")}"))
+      throw(:abort)
+    end
+  end
+
   virtual_column :status,         :type => :string,    :uses => :miq_task
-  virtual_delegate :status_message, :to => "miq_task.message", :allow_nil => true, :default => "Unknown", :type => :string
-  virtual_delegate :queued_at, :to => "miq_task.created_on", :allow_nil => true, :type => :datetime
+  virtual_attribute :status_message, :string, :through => :miq_task, :source => :message, :default => "Unknown"
+  virtual_attribute :queued_at, :datetime, :through => :miq_task, :source => :created_on
   virtual_column :last_run_on,    :type => :datetime,  :uses => :miq_schedule
 
   def row_count(row_count_param = nil)
@@ -69,7 +79,7 @@ class MiqWidget < ApplicationRecord
 
   def create_task(num_targets, userid = User.current_userid)
     userid ||= "system"
-    context_data = {:targets  => num_targets, :complete => 0}
+    context_data = {:targets => num_targets, :complete => 0}
     miq_task     = MiqTask.create(
       :name         => "Generate Widget: '#{title}'",
       :state        => MiqTask::STATE_QUEUED,
@@ -83,7 +93,7 @@ class MiqWidget < ApplicationRecord
     _log.info("Created MiqTask ID: [#{miq_task.id}], Name: [#{miq_task.name}] for: [#{num_targets}] groups")
 
     self.miq_task_id = miq_task.id
-    self.save!
+    save!
 
     miq_task
   end
@@ -97,6 +107,7 @@ class MiqWidget < ApplicationRecord
                   !MiqQueue.where(:method_name => "generate_content",
                                   :class_name  => self.class.name,
                                   :instance_id => id).any?(&:unfinished?)
+
     miq_task.update_status(MiqTask::STATE_FINISHED, MiqTask::STATUS_TIMEOUT, "Timed out stalled task.")
   end
 
@@ -152,7 +163,7 @@ class MiqWidget < ApplicationRecord
   end
 
   def generate_content_complete!
-    self.update!(:last_generated_content_on => Time.now.utc)
+    update!(:last_generated_content_on => Time.now.utc)
   end
 
   def generate_content_complete_message
@@ -175,8 +186,9 @@ class MiqWidget < ApplicationRecord
 
   def queue_generate_content
     return if content_type == "menu"
+
     # Called from schedule
-    unless self.enabled?
+    unless enabled?
       _log.info("#{log_prefix} is disabled, content will NOT be generated")
       return
     end
@@ -201,26 +213,34 @@ class MiqWidget < ApplicationRecord
         options = generate_content_options(g, u)
         generate_content(*options)
       end
+      return
+    end
+
+    timeout_stalled_task
+
+    task = MiqTask.find_by(
+      :name   => "Generate Widget: '#{title}'",
+      :userid => User.current_userid || 'system',
+      :state  => %w[Queued Active]
+    )
+
+    if task
+      _log.warn("#{log_prefix} Skipping task creation for widget content generation. Task with name \"Generate Widget: '#{title}' already exists\"")
     else
-      timeout_stalled_task
-      if MiqTask.exists?(:name   => "Generate Widget: '#{title}'",
-                         :userid => User.current_userid || 'system',
-                         :state  => %w[Queued Active])
-        _log.warn("#{log_prefix} Skipping task creation for widget content generation. Task with name \"Generate Widget: '#{title}' already exists\"")
-      else
-        task = create_task(group_hash.length)
-        _log.info("#{log_prefix} Queueing Content Generation")
-        group_hash.each do |g, u|
-          options = generate_content_options(g, u)
-          queue_generate_content_for_users_or_group(*options)
-        end
-        task.id
+      task = create_task(group_hash.length)
+      _log.info("#{log_prefix} Queueing Content Generation")
+      group_hash.each do |g, u|
+        options = generate_content_options(g, u)
+        queue_generate_content_for_users_or_group(*options)
       end
     end
+
+    task.id
   end
 
   def generate_content(klass, group_description, userids, timezones = nil)
     return if content_type == "menu"
+
     miq_task.state_active if miq_task
     content_generator.generate(self, klass, group_description, userids, timezones)
   end
@@ -352,32 +372,42 @@ class MiqWidget < ApplicationRecord
   def contents_for_user(user)
     user = self.class.get_user(user)
     timezone = timezone_matters? ? user.get_timezone : "UTC"
-    conditions = {:miq_group_id => user.current_group.id}
-    conditions[:user_id] = user.id
-    conditions[:timezone] = timezone
-    contents = miq_widget_contents.find_by(conditions)
+    group_id = user.current_group.id
 
-    conditions.delete(:user_id)
-    contents ||= miq_widget_contents.find_by(conditions)
+    # Fetch all possible content records in a single query
+    possible_contents = miq_widget_contents.where(:miq_group_id => group_id)
 
+    # Try to find exact match (user + timezone)
+    contents = possible_contents.detect { |c| c.user_id == user.id && c.timezone == timezone }
+
+    # Fallback to group + timezone (no specific user)
+    contents ||= possible_contents.detect { |c| c.user_id.nil? && c.timezone == timezone }
+
+    # Fallback to any timezone for this group
     if contents.nil?
       _log.warn("No contents found for Widget: '#{title}' Group: #{user.current_group.description} in Timezone '#{timezone}'. Attempting to get widget's contents from any Timezone ...")
-      conditions.delete(:timezone)
-      contents = miq_widget_contents.find_by(conditions)
+      contents = possible_contents.detect { |c| c.user_id.nil? }
     end
+
     contents
   end
 
   def last_run_on_for_user(user)
     contents = contents_for_user(user)
     return nil if contents.nil?
+
     contents.miq_report_result.nil? ? contents.updated_at : contents.miq_report_result.last_run_on
   end
 
   def grouped_users_by_id
     id_groups = Hash.new { |h, k| h[k] = [] }
+    group_ids = MiqGroup.in_my_region.pluck(:id)
     memberof.compact.each_with_object(id_groups) do |ws, h|
-      h[ws.group_id] << ws.userid unless ws.userid.blank? || ws.group_id.blank?
+      next if ws.userid.blank?
+      next if ws.group_id.blank?
+      next unless group_ids.include?(ws.group_id)
+
+      h[ws.group_id] << ws.userid
     end
   end
 
@@ -387,32 +417,33 @@ class MiqWidget < ApplicationRecord
     users_by_userid = User.in_my_region.where(:userid => grouped_users.values.flatten.uniq).index_by(&:userid)
     grouped_users.each_with_object({}) do |(k, v), h|
       user_objs = users_by_userid.values_at(*v).reject(&:blank?)
-      h[groups_by_id[k]] = user_objs unless user_objs.blank?
+      h[groups_by_id[k]] = user_objs if user_objs.present?
     end
   end
 
   def available_for_group?(group)
     return false unless group
-    has_visibility?(:roles, group.miq_user_role_name) || has_visibility?(:groups, group.description)
+
+    has_visibility?(:roles, group.entitlement&.miq_user_role_id) || has_visibility?(:groups, group.id)
   end
 
   def self.available_for_user(user)
     user = get_user(user)
-    role = user.miq_user_role_name
-    group = user.current_group.description
+    role_id = user.current_group&.entitlement&.miq_user_role_id
+    group_id = user.current_group&.id
 
     # Return all widgets that either has this user's role or is allowed for all roles, or has this user's group
     all.select do |w|
-      w.has_visibility?(:roles, role) || w.has_visibility?(:groups, group)
+      w.has_visibility?(:roles, role_id) || w.has_visibility?(:groups, group_id)
     end
   end
 
   def self.available_for_group(group)
     group = get_group(group)
-    role = group.miq_user_role_name
+    role_id = group&.entitlement&.miq_user_role_id
     # Return all widgets that either has this group's role or is allowed for all roles.
     all.select do |w|
-      w.has_visibility?(:roles, role) || w.has_visibility?(:groups, group.description)
+      w.has_visibility?(:roles, role_id) || w.has_visibility?(:groups, group&.id)
     end
   end
 
@@ -421,7 +452,26 @@ class MiqWidget < ApplicationRecord
   end
 
   def has_visibility?(key, value)
-    visibility.kind_of?(Hash) && visibility.key?(key) && (visibility[key].include?(value) || visibility[key].include?("_ALL_"))
+    return false unless visibility.kind_of?(Hash) && visibility.key?(key)
+
+    vals = Array.wrap(visibility[key])
+    vals.include?(value) || vals.include?("_ALL_")
+  end
+
+  def visibility_values
+    return [] unless visibility.kind_of?(Hash)
+
+    typ = visibility.keys.first
+    values = visibility.values.flatten
+    return [] if typ.blank? || values.blank?
+
+    # Convert ids to useful strings for display
+    case typ
+    when :roles
+      MiqUserRole.where(:id => values).pluck(:name)
+    when :groups
+      MiqGroup.where(:id => values).pluck(:description)
+    end
   end
 
   def self.get_user(user)
@@ -451,7 +501,7 @@ class MiqWidget < ApplicationRecord
   end
 
   def self.sync_from_dir
-    Dir.glob(File.join(WIDGET_DIR, "*.yaml")).sort.each { |f| sync_from_file(f) }
+    Vmdb::Plugins.miq_widgets_content.sort.each { |f| sync_from_file(f) }
   end
 
   def self.sync_from_file(filename)
@@ -480,7 +530,7 @@ class MiqWidget < ApplicationRecord
       end
     else
       $log.info("Widget: [#{attrs["description"]}] file has been added to disk, adding to model")
-      widget = self.create!(attrs)
+      widget = create!(attrs)
     end
 
     widget.sync_schedule(schedule_info)
@@ -518,13 +568,13 @@ class MiqWidget < ApplicationRecord
       :filter        => MiqExpression.new(filter_for_schedule),
       :resource_type => self.class.name,
       :run_at        => {
-        :interval   => {:value => value, :unit  => unit},
+        :interval   => {:value => value, :unit => unit},
         :tz         => server_tz,
         :start_time => sched_time
-      },
+      }
     )
     self.miq_schedule = sched
-    self.save!
+    save!
 
     _log.info("Created schedule for Widget: [#{title}]")
     _log.debug("Widget: [#{title}] created schedule: [#{sched.inspect}]")
@@ -549,13 +599,6 @@ class MiqWidget < ApplicationRecord
     sync_from_dir
   end
 
-  def self.seed_widget(pattern)
-    files = Dir.glob(File.join(WIDGET_DIR, "*#{pattern}*"))
-    files.collect do |f|
-      sync_from_file(f)
-    end
-  end
-
   def save_with_shortcuts(shortcuts)  # [[<shortcut.id>, <widget_shortcut.description>], ...]
     transaction do
       ws = []  # Create an array of widget shortcuts
@@ -577,6 +620,7 @@ class MiqWidget < ApplicationRecord
   # TODO: detect date field in the report?
   def timezone_matters?
     return true unless options
+
     options.fetch(:timezone_matters, true)
   end
 

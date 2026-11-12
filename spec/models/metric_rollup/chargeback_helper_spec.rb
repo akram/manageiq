@@ -3,7 +3,6 @@ RSpec.describe MetricRollup do
     let(:ems) { FactoryBot.build(:ems_vmware) }
 
     before do
-      MiqRegion.seed
       MiqEnterprise.seed
     end
 
@@ -27,7 +26,7 @@ RSpec.describe MetricRollup do
                             :parent_host        => host,
                             :parent_ems_cluster => ems_cluster,
                             :parent_ems         => ems,
-                            :parent_storage     => storage,
+                            :parent_storage     => storage
                            )
         end
 

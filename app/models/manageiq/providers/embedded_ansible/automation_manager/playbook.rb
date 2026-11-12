@@ -5,7 +5,7 @@ class ManageIQ::Providers::EmbeddedAnsible::AutomationManager::Playbook < Manage
     n_('Playbook (Embedded Ansible)', 'Playbooks (Embedded Ansible)', number)
   end
 
-  def run(vars = {})
+  def run(vars = {}, _userid = nil)
     workflow = ManageIQ::Providers::AnsiblePlaybookWorkflow
 
     extra_vars = build_extra_vars(vars[:extra_vars])
@@ -18,12 +18,10 @@ class ManageIQ::Providers::EmbeddedAnsible::AutomationManager::Playbook < Manage
     credentials = collect_credentials(vars)
 
     kwargs = {:become_enabled => vars[:become_enabled]}
-    kwargs[:timeout]   = vars[:execution_ttl].to_i.minutes
-    kwargs[:verbosity] = vars[:verbosity].to_i if vars[:verbosity].present?
+    kwargs[:timeout]   = vars[:execution_ttl].to_i.minutes if vars[:execution_ttl].present?
+    kwargs[:verbosity] = vars[:verbosity].to_i             if vars[:verbosity].present?
 
-    workflow.create_job({}, extra_vars, playbook_vars, vars[:hosts], credentials, kwargs).tap do |job|
-      job.signal(:start)
-    end
+    workflow.create_job({}, extra_vars, playbook_vars, vars[:hosts], credentials, **kwargs).tap(&:signal_start)
   end
 
   private
@@ -31,7 +29,7 @@ class ManageIQ::Providers::EmbeddedAnsible::AutomationManager::Playbook < Manage
   def build_extra_vars(external = {})
     (external || {}).each_with_object({}) do |(k, v), hash|
       match_data = v.kind_of?(String) && /password::/.match(v)
-      hash[k] = match_data ? ManageIQ::Password.decrypt(v.gsub(/password::/, '')) : v
+      hash[k] = match_data ? ManageIQ::Password.decrypt(v.gsub("password::", '')) : v
     end
   end
 

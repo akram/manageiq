@@ -2,11 +2,11 @@ module Rbac
   class PolymorphicError < ArgumentError; end
 
   class Filterer
-    # This list is used to detemine whether RBAC, based on assigned tags, should be applied for a class in a search that is based on the class.
+    # This list is used to determine whether RBAC, based on assigned tags, should be applied for a class in a search that is based on the class.
     # Classes should be added to this list ONLY after:
     # 1. Tagging has been enabled in the UI
     # 2. Class contains acts_as_miq_taggable
-    CLASSES_THAT_PARTICIPATE_IN_RBAC = %w(
+    CLASSES_THAT_PARTICIPATE_IN_RBAC = %w[
       Authentication
       AvailabilityZone
       CloudNetwork
@@ -67,11 +67,11 @@ module Rbac
       Switch
       VmOrTemplate
       WindowsImage
-    )
+    ]
 
-    TAGGABLE_FILTER_CLASSES = CLASSES_THAT_PARTICIPATE_IN_RBAC - %w(EmsFolder MiqRequest) + %w(MiqGroup User Tenant)
+    TAGGABLE_FILTER_CLASSES = CLASSES_THAT_PARTICIPATE_IN_RBAC - %w[EmsFolder MiqRequest] + %w[MiqGroup User Tenant]
 
-    NETWORK_MODELS_FOR_BELONGSTO_FILTER = %w(
+    NETWORK_MODELS_FOR_BELONGSTO_FILTER = %w[
       CloudNetwork
       CloudSubnet
       FloatingIp
@@ -79,9 +79,9 @@ module Rbac
       NetworkPort
       NetworkRouter
       SecurityGroup
-    ).freeze
+    ].freeze
 
-    BELONGSTO_FILTER_CLASSES = %w(
+    BELONGSTO_FILTER_CLASSES = %w[
       Container
       ContainerBuild
       ContainerGroup
@@ -101,7 +101,7 @@ module Rbac
       ResourcePool
       Storage
       VmOrTemplate
-    ) + NETWORK_MODELS_FOR_BELONGSTO_FILTER
+    ] + NETWORK_MODELS_FOR_BELONGSTO_FILTER
 
     # key: descendant::klass
     # value:
@@ -120,12 +120,16 @@ module Rbac
     }
 
     # These classes should accept any of the relationship_mixin methods including:
-    #   :parent_ids
-    #   :ancestor_ids
-    #   :child_ids
-    #   :sibling_ids
-    #   :descendant_ids
-    #   ...
+    # |   | Relationship method| Which tenants can see these resources |
+    # |---|--------------------|---------------------------------------|
+    # | * | :ancestor_ids      | children can see these resources |
+    # |   | :child_ids         | direct parent can see these resources |
+    # | * | :descendant_ids    | all parents can see these resources |
+    # |   | :parent_ids        | only direct children can see these resources |
+    # |   | :sibling_ids       | all tenants of the same level can see these |
+    # | * | nil                | only the same tenant can see the resources (default)|
+    #
+    # Star * highlights most relevant methods
     TENANT_ACCESS_STRATEGY = {
       'CloudSnapshot'          => :descendant_ids,
       'CloudTenant'            => :descendant_ids,
@@ -137,7 +141,7 @@ module Rbac
       'MiqAeNamespace'         => :ancestor_ids,
       'MiqGroup'               => :descendant_ids,
       'MiqRequest'             => :descendant_ids,
-      'MiqRequestTask'         => nil, # tenant only
+      'MiqRequestTask'         => :descendant_ids,
       'MiqTemplate'            => :ancestor_ids,
       'NetworkPort'            => :descendant_ids,
       'NetworkRouter'          => :descendant_ids,
@@ -151,6 +155,7 @@ module Rbac
       'SecurityGroup'          => :descendant_ids,
       'SecurityPolicy'         => :descendant_ids,
       'SecurityPolicyRule'     => :descendant_ids,
+      'Switch'                 => :descendant_ids,
       'Tenant'                 => :descendant_ids,
       'User'                   => :descendant_ids,
       'Vm'                     => :descendant_ids
@@ -158,10 +163,10 @@ module Rbac
 
     # Classes inherited from these classes or mixins are allowing ownership feature on the target model,
     # scope user_or_group_owned is required on target model
-    OWNERSHIP_CLASSES = %w(
+    OWNERSHIP_CLASSES = %w[
       OwnershipMixin
       MiqRequest
-    ).freeze
+    ].freeze
 
     ADDITIONAL_TENANT_CLASSES = %w[ServiceTemplate].freeze
     PRODUCT_FEATURE_CLASSES = %w[MiqShortcut].freeze
@@ -187,16 +192,16 @@ module Rbac
     # @param  options filtering options
     # @option options :targets       [nil|Array<Numeric|Object>|scope] Objects to be filtered
     #   - an nil entry uses the optional where_clause
-    #   - Array<Numeric> list if ids. :class is required. results are returned as ids
-    #   - Array<Object> list of objects. results are returned as objects
+    #   - Array<Numeric> list of ids. :class is required.
+    #   - Array<Object> list of objects.
     # @option options :named_scope   [Symbol|Array<String,Integer>] support for using named scope in search
     #     Example one scope without args:     :named_scope => :in_my_region
     #     Example one scope with args:        :named_scope => [[:in_region, 1]]
     #     Example more scopes without args:   :named_scope => [:in_my_region, :active]
     #     Example more scopes some with args: :named_scope => [[:in_region, 1], :active, [:with_manager, "X"]]
     # @option options :conditions    [Hash|String|Array<String>]
-    # @option options :where_clause  []
-    # @option options :sub_filter
+    # @option options :where_clause  [] same as conditions. used in one place. would like to remove
+    # @option options :sub_filter    [Nil|Array<String>] ui advanced search filter
     # @option options :include_for_find [Array<Symbol>, Hash{Symbol => Symbol,Hash,Array}] models included but not in query
     # @option options :references   [Array<Symbol>], models used by select and where. If not passed, uses include_for_find instead
     # @option options :filter       [MiqExpression] (optional)
@@ -209,23 +214,20 @@ module Rbac
     # @option options :order        [Numeric] (default: no order)
     # @option options :limit        [Numeric] (default: no limit)
     # @option options :offset       [Numeric] (default: no offset)
-    # @option options :apply_limit_in_sql [Boolean]
-    # @option options :ext_options
     # @option options :skip_count   [Boolean] (default: false)
+    # @option options :prune_sql    [Boolean] (default: true) true to remove sql from ruby filter
+    #
     # @return [Array<Array<Object>,Hash>] list of object and the associated search options
     #   Array<Object> list of object in the same order as input targets if possible
     # @option attrs :auth_count [Numeric]
     # @option attrs :user_filters
-    # @option attrs apply_limit_in_sql
-    # @option attrs target_ids_for_paging
+    # @option attrs :apply_limit_in_sql [Boolean] true if this limit was applied in sql
+    # @option attrs :target_ids_for_paging [Array[Numeric]] the list of target ids (only if we can't apply limits in sql)
     def search(options = {})
       if options.key?(:targets) && options[:targets].kind_of?(Array) && options[:targets].empty?
         return [], {:auth_count => 0}
       end
-      # => empty inputs - normal find with optional where_clause
-      # => list if ids - :class is required for this format.
-      # => list of objects
-      # results are returned in the same format as the targets. for empty targets, the default result format is a list of ids.
+
       targets           = options[:targets]
       scope             = options[:named_scope]
 
@@ -241,6 +243,8 @@ module Rbac
       offset            = options[:offset] || targets.try(:offset_value)
       order             = options[:order]  || targets.try(:order_values)
 
+      prune_sql         = options.fetch(:prune_sql, true)
+
       user, miq_group, user_filters = get_user_info(options[:user],
                                                     options[:userid],
                                                     options[:miq_group],
@@ -254,13 +258,14 @@ module Rbac
         scope = apply_scope(klass, scope)
         scope = apply_select(klass, scope, options[:extra_cols]) if options[:extra_cols]
       elsif targets.kind_of?(Array)
+        # TODO: get away from passing in a klass and a list of target ids
         if targets.first.kind_of?(Numeric)
           target_ids = targets
           # assume klass is passed in
         else
           target_ids  = targets.collect(&:id)
           klass       = targets.first.class
-          klass       = base_class if !klass.respond_to?(:find) && (base_class = rbac_base_class(klass))
+          klass       = rbac_base_class(klass) if !klass.respond_to?(:find)
           klass       = safe_base_class(klass) if is_sti?(klass) # always scope to base class if model is STI
         end
         scope = apply_scope(klass, scope)
@@ -271,11 +276,12 @@ module Rbac
         targets = to_class(targets).all
         scope = apply_scope(targets, scope)
 
+        # 100% of tests do not pass klass AND targets - so here, 100% of tests klass == nil
+        # Think that klass != nil is not a valid use case here
         unless klass.respond_to?(:find)
           klass = targets
           klass = klass.klass if klass.respond_to?(:klass)
-          # working around MiqAeDomain not being in rbac_class
-          klass = base_class if (base_class = rbac_base_class(klass))
+          klass = rbac_base_class(klass)
         end
         scope = apply_select(klass, scope, options[:extra_cols]) if options[:extra_cols]
       end
@@ -290,18 +296,44 @@ module Rbac
       scope = scope.except(:offset, :limit, :order)
       scope = scope_targets(klass, scope, user_filters, user, miq_group)
               .where(conditions).where(sub_filter).where(where_clause).where(exp_sql).where(ids_clause)
-              .includes(include_for_find).includes(exp_includes)
               .order(order)
 
-      scope = include_references(scope, klass, references, exp_includes)
+      scope = include_references(scope, klass, include_for_find, references, exp_includes)
       scope = scope.limit(limit).offset(offset) if attrs[:apply_limit_in_sql]
 
+      #      SELECT col1, (SELECT "abc") AS virtual_col
+      #        FROM model
+      #       LIMIT 20
+      #
+      # virtual attribute (implemented as subqueries) are calculated for every row in whole table
+      # read: 1,000 row table, limit 20 records will run subquery 1,000 times
+      #
+      # we use an inline_view (inner and outer view)
+      #
+      #      SELECT col1, (SELECT "abc") AS virtual_col1
+      #        FROM (
+      #          SELECT col1
+      #            FROM model
+      #           LIMIT 20
+      #        ) AS model
+      #
+      #   inner view has limiter, outer view only sees $limit (i.e.: 20) rows:
+      #     1. Virtual attributes in outer view only performs <20 subqueries
+      #     2. SQL COUNT on the outer view only sees <20 rows.
+      #        Hence auth_count calculated from inner_scope.
+      #
       if inline_view?(options, scope)
-        inner_scope = scope.except(:select, :includes, :references)
-        scope.includes_values.each { |hash| inner_scope = add_joins(klass, inner_scope, hash) }
+        inner_scope = scope.except(:select, :includes, :references, :eager_load, :preload)
+        # similar to include_references but using joins
+        # TODO: optimization: Can we remove these references from the outer query?
+        #       To do this, we may need to introduce join() to complete the triad: include/reference/join
+        inner_scope = add_joins(klass, inner_scope, references)
+        # TODO: do we want to klass.prune_references(exp_includes)? (see also include_references)
+        inner_scope = add_joins(klass, inner_scope, exp_includes)
         if inner_scope.order_values.present?
           inner_scope = apply_select(klass, inner_scope, select_from_order_columns(inner_scope.order_values))
         end
+        # TODO: Convert from(inner_scope.to_sql) to from(inner_scope)
         scope = scope.from(Arel.sql("(#{inner_scope.to_sql})").as(scope.table_name))
                      .except(:offset, :limit, :where)
 
@@ -316,24 +348,34 @@ module Rbac
         auth_count ||= attrs[:apply_limit_in_sql] && limit ? targets.except(:offset, :limit, :order).count(:all) : targets.length
       end
 
+      # if we have a sub expression that requires ruby, then run it in ruby
+      # (some of the filtering may have happened in sql)
+      #
+      # NOTE: if supported_by_sql is false then apply_limit_in_sql is also false
       if search_filter && targets && (!exp_attrs || !exp_attrs[:supported_by_sql])
-        rejects     = targets.reject { |obj| matches_search_filters?(obj, search_filter, tz) }
-        auth_count -= rejects.length unless options[:skip_counts]
-        targets -= rejects
+        targets = targets.lazy.select { |obj| matches_search_filters?(obj, search_filter, tz, :prune_sql => prune_sql) }
+        unless options[:skip_counts]
+          # use to_a to run filters once. otherwise will filter for:
+          # length, (possible) pagination ids, and final target results
+          targets    = targets.to_a
+          auth_count = targets.length
+        end
       end
+      attrs[:auth_count] = auth_count unless options[:skip_counts]
 
       if limit && !attrs[:apply_limit_in_sql]
-        attrs[:target_ids_for_paging] = targets.collect(&:id) # Save ids of targets, since we have then all, to avoid going back to SQL for the next page
-        offset = offset.to_i
-        targets = targets[offset...(offset + limit.to_i)] || []
+        unless options[:skip_counts]
+          # to_a in search_filter ensured this is not lazy
+          attrs[:target_ids_for_paging] = targets.collect(&:id)
+        end
+        targets = targets.drop(offset.to_i).take(limit.to_i)
       end
 
       # Preserve sort order of incoming target_ids
       if !target_ids.nil? && !order
         targets = targets.sort_by { |a| target_ids.index(a.id) }
       end
-
-      attrs[:auth_count] = auth_count unless options[:skip_counts]
+      targets = targets.to_a if targets.kind_of?(Enumerator::Lazy)
 
       return targets, attrs
     rescue ActiveRecord::EagerLoadPolymorphicError
@@ -387,22 +429,36 @@ module Rbac
       end
     end
 
-    def include_references(scope, klass, references, exp_includes)
-      scope.references(klass.includes_to_references(references)).references(klass.includes_to_references(exp_includes))
+    # NOTE: for ActsAsArModel, scope will be a QueryRelation
+    #       for ActsAsArScope, scope will be a standard AR scope
+    def include_references(scope, klass, includes, references, exp_includes)
+      # TODO: do we want to klass.prune_references(exp_includes)? (see same comment for inline_view? section)
+      scope.eager_load(references || {}).eager_load(exp_includes || {}).preload(includes)
     end
 
     # @param includes [Array, Hash]
     def add_joins(klass, scope, includes)
       return scope unless includes
+
+      # NOTE: We should be pre-pruning polymorphic out of here, since they shouldn't be in references.
+      # TODO: do we want to be less lenient? i.e.: raise PolymorphicError if reflection&.polymorphic?
       includes = Array(includes) unless includes.kind_of?(Enumerable)
       includes.each do |association, value|
         reflection = klass.reflect_on_association(association)
         if reflection && !reflection.polymorphic?
           scope = value ? scope.left_outer_joins(association => value) : scope.left_outer_joins(association)
-          scope = scope.distinct if reflection.try(:collection?)
         end
       end
+      # This adds a DISTINCT to safeguard "JOIN has_many" screwing up the LIMIT.
+      scope = scope.distinct if !scope.distinct_value && is_collection?(klass, includes)
       scope
+    end
+
+    def is_collection?(klass, includes)
+      Array(includes).any? do |association, value|
+        reflection = klass.reflect_on_association(association)
+        reflection&.collection? || !reflection.polymorphic? && is_collection?(reflection.klass, value)
+      end
     end
 
     def filtered(objects, options = {})
@@ -432,8 +488,16 @@ module Rbac
       klass != VimPerformanceDaily && klass != VimPerformanceTag && (klass < MetricRollup || klass < Metric)
     end
 
+    # get the base class for a class
+    #
+    # rbac_class().nil? checks are there to avoid promoting to a base class when the child class is supported but base class is not
+    # Read: child: MiqAeDomain (supported) to base: MiqAeNamespace (not supported)
     def rbac_base_class(klass)
-      klass.base_class if klass.respond_to?(:base_class) && rbac_class(klass).nil? && rbac_class(klass.base_class)
+      if klass.respond_to?(:base_class) && rbac_class(klass).nil? && rbac_class(klass.base_class)
+        klass.base_class
+      else
+        klass
+      end
     end
 
     def safe_base_class(klass)
@@ -451,16 +515,20 @@ module Rbac
         #      VmPerformance   => VmOrTemplate
         return klass.name[0..-12].constantize.base_class
       end
+
       nil
     end
 
+    # pluck_ids is here to show where sql queries could work in calc_filtered_ids.
+    # So once calc_filtered_ids uses pluck_ids for all, then that filter
+    # can converted across to a 100% sql friendly query
     def pluck_ids(targets)
       targets.pluck(:id) if targets
     end
 
     def self_service_ownership_scope?(miq_group, klass)
       is_ownership_class = OWNERSHIP_CLASSES.any? { |allowed_ownership_klass| klass <= allowed_ownership_klass.safe_constantize }
-      miq_group.present? && miq_group.self_service? && is_ownership_class && klass.respond_to?(:user_or_group_owned)
+      miq_group.present? && miq_group.self_service?(klass) && is_ownership_class && klass.respond_to?(:user_or_group_owned)
     end
 
     def self_service_ownership_scope(user, miq_group, klass)
@@ -468,7 +536,7 @@ module Rbac
 
       # for limited_self_service, use user's resources, not user.current_group's resources
       # for reports (user = nil), still use miq_group
-      miq_group = nil if user && miq_group.limited_self_service?
+      miq_group = nil if user && miq_group.limited_self_service?(klass)
 
       # Get the list of objects that are owned by the user or their LDAP group
       klass.user_or_group_owned(user, miq_group).except(:order)
@@ -493,7 +561,7 @@ module Rbac
     #            filter                  = u_union_d_union_b_and_m INTERSECTION tenant_filter_ids
     #
     # a nil as input for any field means it DOES NOT apply the operation(INTERSECTION, UNION)
-    # a nil as output means there is not filter
+    # a nil as output means there is no filter
     #
     # @param u_filtered_ids [nil|Array<Integer>] self service user owned objects
     # @param b_filtered_ids [nil|Array<Integer>] objects that belong to parent
@@ -540,6 +608,7 @@ module Rbac
 
     def get_belongsto_filter_object_ids(klass, filter)
       return nil if !BELONGSTO_FILTER_CLASSES.include?(safe_base_class(klass).name) || filter.blank?
+
       get_belongsto_matches(filter, rbac_class(klass)).collect(&:id)
     end
 
@@ -547,6 +616,7 @@ module Rbac
       klass = scope.respond_to?(:klass) ? scope.klass : scope
       return nil if !TAGGABLE_FILTER_CLASSES.include?(safe_base_class(klass).name) || filter.blank?
       return scope.where(filter.to_sql.first) if filter.kind_of?(MiqExpression)
+
       scope.find_tags_by_grouping(filter, :ns => '*').reorder(nil)
     end
 
@@ -576,7 +646,9 @@ module Rbac
       klass = scope.respond_to?(:klass) ? scope.klass : scope
       user_or_group = user || miq_group
       tenant_id_clause = klass.tenant_id_clause(user_or_group)
-      tenant_id_clause ? scope.where(tenant_id_clause) : scope
+      scope = scope.where(tenant_id_clause) if tenant_id_clause
+      scope = scope.tenant_join_clause if scope.respond_to?(:tenant_join_clause)
+      scope
     end
 
     def scope_to_cloud_tenant(scope, user, miq_group)
@@ -592,17 +664,35 @@ module Rbac
     def scope_for_user_role_group(klass, scope, miq_group, user, managed_filters)
       user_or_group = miq_group || user
 
-      if user_or_group.try!(:self_service?) && MiqUserRole != klass
+      if user_or_group&.self_service? && klass != MiqUserRole
         scope.where(:id => klass == User ? user.id : miq_group.id)
       else
         role = user_or_group.miq_user_role
-        # hide creating admin group / roles from non-super administrators
+
+        # Exclude users/groups/roles tied to the super admin user if the current user isn't also
+        # a super admin user. This prevents a tenant admin from creating a super admin and then
+        # escalating privileges.
         unless role&.super_admin_user?
-          scope = scope.with_roles_excluding(MiqProductFeature::SUPER_ADMIN_FEATURE)
+          # In the case that the user is not currently in a super admin group, but can _become_
+          #   a super admin by virtue of being in multiple groups, then they will be filtered by
+          #   with_roles_excluding. The allowed_ids option ensures the user can still see themselves.
+          #
+          # TODO: Determine if this same logic should apply to MiqUserRole as well
+          with_roles_excluding_options =
+            if klass == User
+              {:allowed_ids => user.id}
+            elsif klass == MiqGroup
+              {:allowed_ids => miq_group.id}
+            else
+              {}
+            end
+
+          scope = scope.with_roles_excluding(MiqProductFeature::SUPER_ADMIN_FEATURE, **with_roles_excluding_options)
         end
 
-        if MiqUserRole != klass
+        if klass != MiqUserRole
           filtered_ids = pluck_ids(get_managed_filter_object_ids(scope, managed_filters))
+
           # Non tenant admins can only see their own groups. Note - a super admin is also a tenant admin
           scope = scope.with_groups(user.miq_group_ids) unless role&.tenant_admin_user?
         end
@@ -681,7 +771,7 @@ module Rbac
 
     def lookup_user_group(user, userid, miq_group, miq_group_id)
       user ||= (userid && User.lookup_by_userid(userid)) || User.current_user
-      miq_group_id ||= miq_group.try!(:id)
+      miq_group_id ||= miq_group&.id
       return [user, user.current_group] if user && user.current_group_id.to_s == miq_group_id.to_s
 
       group = if user
@@ -701,7 +791,7 @@ module Rbac
     # for reports, user is currently nil, so use the group filter
     # the user.get_filters delegates to user.current_group anyway
     def lookup_user_filters(miq_group)
-      filters = miq_group.try!(:get_filters).try!(:dup) || {}
+      filters = miq_group&.get_filters&.dup || {}
       filters["managed"] ||= []
       filters["belongsto"] ||= []
       filters
@@ -717,7 +807,14 @@ module Rbac
           klass_id, descendant_id = method_name
           klass.where(klass_id => descendants.select(descendant_id)).distinct
         else
-          MiqPreloader.preload(descendants, method_name)
+          r_klass = descendants.try(:klass) || descendants.first.class
+          # some of the entries from MATCH_VIA_DESCENDANT_RELATIONSHIPS are not associations
+          # so we don't preload those
+          # specifically: parent_blue_folders and resource_pool
+          # ext_management_system will get preloaded
+          if r_klass.reflections.key?(method_name.to_s)
+            MiqPreloader.preload(descendants, method_name)
+          end
           descendants.flat_map { |object| object.send(method_name) }.grep(klass).uniq
         end
       end
@@ -765,11 +862,13 @@ module Rbac
     def get_belongsto_matches(blist, klass)
       return get_belongsto_matches_for_host(blist) if klass <= Host
       return get_belongsto_matches_for_storage(blist) if klass == Storage
+
       association_name = klass.base_model.to_s.tableize
 
       blist.flat_map do |bfilter|
         vcmeta_list = MiqFilter.belongsto2object_list(bfilter)
         next [] if vcmeta_list.empty?
+
         # typically, this is the only one we want:
         vcmeta = vcmeta_list.last
 
@@ -823,7 +922,7 @@ module Rbac
         vcmeta = MiqFilter.belongsto2object(bfilter)
         next unless vcmeta
 
-        subtree  = vcmeta.subtree
+        subtree = vcmeta.subtree
         clusters += subtree.grep(EmsCluster)
         hosts    += subtree.grep(Host)
       end
@@ -837,8 +936,8 @@ module Rbac
       MiqPreloader.preload_and_map(sources, :storages)
     end
 
-    def matches_search_filters?(obj, filter, tz)
-      filter.nil? || filter.lenient_evaluate(obj, tz)
+    def matches_search_filters?(obj, filter, timezone, prune_sql: true)
+      filter.nil? || filter.evaluate(obj, timezone, :prune_sql => prune_sql)
     end
   end
 end

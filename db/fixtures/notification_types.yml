@@ -19,6 +19,11 @@
   :expires_in: 7.days
   :level: :success
   :audience: tenant
+- :name: automate_template_published
+  :message: Template %{subject} has been published.
+  :expires_in: 7.days
+  :level: :success
+  :audience: tenant
 - :name: vm_retired
   :message: Virtual Machine %{subject} has been retired.
   :expires_in: 7.days
@@ -154,6 +159,11 @@
   :expires_in: 24.hours
   :level: :warning
   :audience: global
+- :name: orchestration_stack_retiring
+  :message: Orchestration Stack %{subject} has started retirement.
+  :expires_in: 7.days
+  :level: :success
+  :audience: tenant
 - :name: orchestration_stack_retired
   :message: Orchestration Stack %{subject} has been retired.
   :expires_in: 7.days
@@ -181,6 +191,16 @@
   :audience: global
 - :name: vm_resize_error
   :message: 'Resize VM %{subject} failed: %{error}'
+  :expires_in: 24.hours
+  :level: :error
+  :audience: global
+- :name: cloud_container_create_success
+  :message: 'Creating Cloud Object Store Container %{cloud_container_name} completed successfully'
+  :expires_in: 24.hours
+  :level: :success
+  :audience: global
+- :name: cloud_container_create_error
+  :message: 'Creating Cloud Object Store Container %{cloud_container_name} failed: %{error_message}'
   :expires_in: 24.hours
   :level: :error
   :audience: global

@@ -1,14 +1,5 @@
 module ManageIQ::Providers
   class CloudManager < BaseManager
-    require_nested :AuthKeyPair
-    require_nested :Template
-    require_nested :MetricsCapture
-    require_nested :Provision
-    require_nested :ProvisionWorkflow
-    require_nested :Vm
-    require_nested :OrchestrationStack
-    require_nested :VmOrTemplate
-
     class << model_name
       define_method(:route_key) { "ems_clouds" }
       define_method(:singular_route_key) { "ems_cloud" }
@@ -27,6 +18,7 @@ module ManageIQ::Providers
     has_many :cloud_object_store_objects,    :foreign_key => :ems_id, :dependent => :destroy
     has_many :cloud_services,                :foreign_key => :ems_id, :dependent => :destroy
     has_many :cloud_databases,               :foreign_key => :ems_id, :dependent => :destroy
+    has_many :cloud_database_servers,        :foreign_key => :ems_id, :dependent => :destroy
     has_many :key_pairs,                     :class_name  => "AuthKeyPair", :as => :resource, :dependent => :destroy
     has_many :host_aggregates,               :foreign_key => :ems_id, :dependent => :destroy
     has_many :resource_groups,               :foreign_key => :ems_id, :dependent => :destroy, :inverse_of => :ext_management_system
@@ -41,12 +33,7 @@ module ManageIQ::Providers
 
     virtual_has_many :volume_availability_zones, :class_name => "AvailabilityZone", :uses => :availability_zones
 
-    supports_not :auth_key_pair_create
-    supports_not :cinder_service
-    supports_not :cloud_tenants
-    supports_not :cloud_volume
-    supports_not :cloud_tenant_mapping
-    supports_not :create_flavor
+    supports     :authentication_status
 
     validates_presence_of :zone
 
@@ -69,16 +56,13 @@ module ManageIQ::Providers
     # This method is NOT meant to be called from production code.
     def open_browser
       raise NotImplementedError unless Rails.env.development?
+
       require 'util/miq-system'
       MiqSystem.open_browser(browser_url)
     end
 
-    def validate_authentication_status
-      {:available => true, :message => nil}
-    end
-
     def stop_event_monitor_queue_on_credential_change
-      if event_monitor_class && !self.new_record? && self.credentials_changed?
+      if event_monitor_class && !new_record? && credentials_changed?
         _log.info("EMS: [#{name}], Credentials have changed, stopping Event Monitor.  It will be restarted by the WorkerMonitor.")
         stop_event_monitor_queue
         network_manager.stop_event_monitor_queue if respond_to?(:network_manager) && network_manager
@@ -87,6 +71,7 @@ module ManageIQ::Providers
 
     def sync_cloud_tenants_with_tenants
       return unless supports?(:cloud_tenant_mapping)
+
       sync_root_tenant
       sync_tenants
       sync_deleted_cloud_tenants
@@ -98,7 +83,7 @@ module ManageIQ::Providers
       _log.info("Syncing CloudTenant with Tenants...")
 
       CloudTenant.with_ext_management_system(id).walk_tree do |cloud_tenant, _|
-        cloud_tenant_description = cloud_tenant.description.blank? ? cloud_tenant.name : cloud_tenant.description
+        cloud_tenant_description = (cloud_tenant.description.presence || cloud_tenant.name)
         tenant_params = {:name => cloud_tenant.name, :description => cloud_tenant_description, :source => cloud_tenant}
 
         tenant_parent = cloud_tenant.parent.try(:source_tenant) || source_tenant

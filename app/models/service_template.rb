@@ -20,7 +20,8 @@ class ServiceTemplate < ApplicationRecord
                                   :fqname,
                                   :configuration_template,
                                   :configuration_template_id,
-                                  :configuration_template_type].freeze
+                                  :configuration_template_type,
+                                  :configuration_script_id].freeze
 
   include CustomActionsMixin
   include ServiceMixin
@@ -29,8 +30,8 @@ class ServiceTemplate < ApplicationRecord
   include TenancyMixin
   include ArchivedMixin
   include CiFeatureMixin
-  include_concern 'Filter'
-  include_concern 'Copy'
+  include Filter
+  include Copy
 
   validates :name, :presence => true
   belongs_to :tenant
@@ -39,7 +40,7 @@ class ServiceTemplate < ApplicationRecord
   has_many   :services
 
   has_many :service_template_tenants, :dependent => :destroy
-  has_many :additional_tenants, :through => :service_template_tenants, :source => :tenant, :dependent => :destroy
+  has_many :additional_tenants, :through => :service_template_tenants, :source => :tenant
 
   has_one :picture, :dependent => :destroy, :as => :resource, :autosave => true
 
@@ -72,12 +73,19 @@ class ServiceTemplate < ApplicationRecord
   scope :public_service_templates,                  ->         { where(:internal => [false, nil]) }
 
   supports :order do
-    unsupported_reason_add(:order, 'Service template does not belong to a service catalog') unless service_template_catalog
-    unsupported_reason_add(:order, 'Service template is not configured to be displayed') unless display
+    if !service_template_catalog
+      'Service template does not belong to a service catalog'
+    elsif !display
+      'Service template is not configured to be displayed'
+    end
   end
-  alias orderable?     supports_order?
-  alias validate_order supports_order?
 
+  # ui-classic calls "validate_#{action}"
+  def validate_order
+    supports?(:order)
+  end
+
+  alias orderable? validate_order
 
   def self.with_tenant(tenant_id)
     tenant = Tenant.find(tenant_id)
@@ -129,12 +137,28 @@ class ServiceTemplate < ApplicationRecord
   end
 
   def self.class_from_request_data(data)
-    request_type = data['prov_type']
-    if request_type.include?('generic_')
-      generic_type = request_type.split('generic_').last
-      "ServiceTemplate#{generic_type.camelize}".constantize
+    class_from_prov_type(data['prov_type'])
+  end
+
+  def self.class_from_prov_type(prov_type)
+    raise ArgumentError, "Invalid prov_type '#{prov_type}'" unless all_catalog_item_types.key?(prov_type)
+
+    # This is the full list of acceptable values.  This allows us to check for
+    # class name validity before calling constantize.
+    allowed_class_names = descendants.collect(&:name)
+
+    # If we are given a "generic" provision type then assume that the prov_type
+    # maps to a valid class otherwise it is invalid
+    #
+    # Non-generic provision types however are able to work with the base
+    # ServiceTemplate class and thus we cannot raise an exception in this case.
+    if prov_type.starts_with?("generic_")
+      generic_type = prov_type.split('generic_').last
+      class_name   = "ServiceTemplate#{generic_type.camelize}"
+      class_name.constantize(:allowlist => allowed_class_names)
     else
-      ServiceTemplate
+      class_name = "ServiceTemplate#{prov_type.camelize}"
+      class_name.safe_constantize(:allowlist => allowed_class_names) || ServiceTemplate
     end
   end
 
@@ -185,6 +209,7 @@ class ServiceTemplate < ApplicationRecord
 
   def archive
     raise _("Cannot archive while in use") unless active_requests.empty?
+
     archive!
   end
 
@@ -211,7 +236,7 @@ class ServiceTemplate < ApplicationRecord
     nh['visible'] = nh.delete('display') if nh.key?('display')
 
     nh['options'][:dialog] = service_task.options[:dialog]
-    (nh.keys - Service.column_names + %w(created_at guid service_template_id updated_at id type prov_type)).each { |key| nh.delete(key) }
+    (nh.keys - Service.column_names + %w[created_at guid service_template_id updated_at id type prov_type]).each { |key| nh.delete(key) }
 
     # Hide child services by default
     nh['visible'] = false if parent_svc
@@ -230,7 +255,7 @@ class ServiceTemplate < ApplicationRecord
 
       service_resources.each do |sr|
         nh = sr.attributes.dup
-        %w(id created_at updated_at service_template_id).each { |key| nh.delete(key) }
+        %w[id created_at updated_at service_template_id].each { |key| nh.delete(key) }
         svc.add_resource(sr.resource, nh) unless sr.resource.nil?
       end
     end
@@ -281,7 +306,7 @@ class ServiceTemplate < ApplicationRecord
       scaling_min = child_svc_rsc.scaling_min
       1.upto(scaling_min).each do |scaling_idx|
         nh = parent_service_task.attributes.dup
-        %w(id created_on updated_on type state status message).each { |key| nh.delete(key) }
+        %w[id created_on updated_on type state status message].each { |key| nh.delete(key) }
         nh['options'] = parent_service_task.options.dup
         nh['options'].delete(:child_tasks)
         # Initial Options[:dialog] to an empty hash so we do not pass down dialog values to child services tasks
@@ -290,6 +315,7 @@ class ServiceTemplate < ApplicationRecord
                 !self.class.include_service_template?(parent_service_task,
                                                       child_svc_rsc.resource.id,
                                                       parent_service)
+
         new_task = parent_service_task.class.new(nh)
         new_task.options.merge!(
           :src_id              => child_svc_rsc.resource.id,
@@ -297,7 +323,7 @@ class ServiceTemplate < ApplicationRecord
           :scaling_min         => scaling_min,
           :service_resource_id => child_svc_rsc.id,
           :parent_service_id   => parent_service.id,
-          :parent_task_id      => parent_service_task.id,
+          :parent_task_id      => parent_service_task.id
         )
         new_task.state  = 'pending'
         new_task.status = 'Ok'
@@ -314,6 +340,7 @@ class ServiceTemplate < ApplicationRecord
 
   def set_ownership(service, user)
     return if user.nil?
+
     service.evm_owner = user
     if user.current_group
       $log.info("Setting Service Owning User to Name=#{user.name}, ID=#{user.id}, Group to Name=#{user.current_group.name}, ID=#{user.current_group.id}")
@@ -392,20 +419,23 @@ class ServiceTemplate < ApplicationRecord
     resource_action_list.each do |action|
       ae_endpoint = ae_endpoints[action[:param_key]]
       next unless ae_endpoint
+
       build_resource_action(ae_endpoint, action)
     end
     save!
   end
 
   def self.create_from_options(options)
-    create!(options.except(:config_info).merge(:options => { :config_info => options[:config_info] }))
+    create!(options.except(:config_info).merge(:options => {:config_info => options[:config_info]}))
   end
   private_class_method :create_from_options
 
   def provision_request(user, options = nil, request_options = {})
     request_options[:provision_workflow] = true
+    request_options[:parent_id] = options.delete('param_parent_request_id') unless options['param_parent_request_id'].nil?
     result = order(user, options, request_options)
     raise result[:errors].join(", ") if result[:errors].any?
+
     result[:request]
   end
 
@@ -422,7 +452,7 @@ class ServiceTemplate < ApplicationRecord
       :class_name  => self.class.name,
       :instance_id => id,
       :method_name => "order",
-      :args        => [user_id, options, request_options],
+      :args        => [user_id, options, request_options]
     )
   end
 
@@ -446,7 +476,7 @@ class ServiceTemplate < ApplicationRecord
           :interval   => {:unit => "once"},
           :start_time => time,
           :tz         => "UTC",
-        },
+        }
       )
       {:schedule => schedule}
     else
@@ -479,6 +509,17 @@ class ServiceTemplate < ApplicationRecord
     zone&.name if atomic?
   end
 
+  # ServiceTemplate button_order uses prefixed string keys ("cb-N" for buttons,
+  # "cbg-N" for groups) unlike CustomButtonSet which stores integer IDs.
+  def add_custom_button(button_id)
+    with_lock do
+      self.options ||= {}
+      key = "cb-#{button_id}"
+      options[:button_order] = (options[:button_order] || []) | [key]
+      save!
+    end
+  end
+
   private
 
   def update_service_resources(config_info, auth_user = nil)
@@ -509,6 +550,7 @@ class ServiceTemplate < ApplicationRecord
     if options[:prov_type] && options[:prov_type] != prov_type
       raise _('prov_type cannot be changed')
     end
+
     options[:config_info]
   end
 
@@ -536,11 +578,13 @@ class ServiceTemplate < ApplicationRecord
 
   def construct_config_info
     config_info = {}
-
-    miq_request_resource = service_resources.find_by(:resource_type => 'MiqRequest')
-    config_info.merge!(miq_request_resource.resource.options.compact) if miq_request_resource
-
+    config_info.merge!(miq_request_info)
     config_info.merge!(resource_actions_info)
+  end
+
+  def miq_request_info
+    miq_request = service_resources.find_by(:resource_type => 'MiqRequest')&.resource
+    miq_request&.options&.compact || {}
   end
 
   def resource_actions_info

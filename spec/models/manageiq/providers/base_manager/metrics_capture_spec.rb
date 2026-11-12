@@ -5,6 +5,7 @@ RSpec.describe ManageIQ::Providers::BaseManager::MetricsCapture do
   let(:ems) { FactoryBot.create(:ems_vmware, :zone => miq_server.zone) }
 
   context ".perf_capture_health_check" do
+    before { stub_settings_merge(:ems => ems_concurrent_requests("vmware")) }
     let(:vm) { FactoryBot.create(:vm_perf, :ext_management_system => ems) }
     let(:vm2) { FactoryBot.create(:vm_perf, :ext_management_system => ems) }
 
@@ -22,10 +23,6 @@ RSpec.describe ManageIQ::Providers::BaseManager::MetricsCapture do
   end
 
   describe ".perf_capture_gap" do
-    before do
-      MiqRegion.seed
-    end
-
     let(:host) { FactoryBot.create(:host_vmware, :ext_management_system => ems, :perf_capture_enabled => true) }
     let!(:vm)   { FactoryBot.create(:vm_vmware, :ext_management_system => ems, :host => host) }
     let(:host2) do
@@ -42,15 +39,35 @@ RSpec.describe ManageIQ::Providers::BaseManager::MetricsCapture do
     let(:storage) { FactoryBot.create(:storage_vmware, :perf_capture_enabled => true) }
 
     it "should queue up targets for historical" do
+      stub_settings_merge(:ems => ems_concurrent_requests("vmware"))
       Timecop.freeze do
         Metric::Capture.perf_capture_gap(7.days.ago.utc, 5.days.ago.utc, nil, ems.id)
         expect(queue_timings).to eq(
           "historical" => {
-            vm    => arg_day_range(7.days.ago.utc, 5.days.ago.utc),
-            vm2   => arg_day_range(7.days.ago.utc, 5.days.ago.utc),
-            host  => arg_day_range(7.days.ago.utc, 5.days.ago.utc),
-            host2 => arg_day_range(7.days.ago.utc, 5.days.ago.utc),
-            host3 => arg_day_range(7.days.ago.utc, 5.days.ago.utc),
+            queue_object(vm)    => arg_day_range(7.days.ago.utc, 5.days.ago.utc),
+            queue_object(vm2)   => arg_day_range(7.days.ago.utc, 5.days.ago.utc),
+            queue_object(host)  => arg_day_range(7.days.ago.utc, 5.days.ago.utc),
+            queue_object(host2) => arg_day_range(7.days.ago.utc, 5.days.ago.utc),
+            queue_object(host3) => arg_day_range(7.days.ago.utc, 5.days.ago.utc),
+          }
+        )
+      end
+    end
+
+    it "should queue up targets for historical" do
+      stub_settings_merge(:ems => ems_concurrent_requests("vmware", 3))
+      Timecop.freeze do
+        Metric::Capture.perf_capture_gap(7.days.ago.utc, 5.days.ago.utc, nil, ems.id)
+        # 2 per day
+        expect(MiqQueue.where("class_name like '%Host'").count).to eq(2)
+        expect(MiqQueue.where("class_name like '%Vm'").count).to eq(2)
+        expect(queue_timings).to eq(
+          "historical" => {
+            queue_object(vm)    => arg_day_range(7.days.ago.utc, 5.days.ago.utc),
+            queue_object(vm2)   => arg_day_range(7.days.ago.utc, 5.days.ago.utc),
+            queue_object(host)  => arg_day_range(7.days.ago.utc, 5.days.ago.utc),
+            queue_object(host2) => arg_day_range(7.days.ago.utc, 5.days.ago.utc),
+            queue_object(host3) => arg_day_range(7.days.ago.utc, 5.days.ago.utc),
           }
         )
       end
@@ -123,10 +140,6 @@ RSpec.describe ManageIQ::Providers::BaseManager::MetricsCapture do
   end
 
   describe ".perf_capture_all_queue" do
-    before do
-      MiqRegion.seed
-    end
-
     let(:host) { FactoryBot.create(:host_vmware, :ext_management_system => ems, :perf_capture_enabled => true) }
     let(:vm)   { FactoryBot.create(:vm_vmware, :ext_management_system => ems, :host => host).tap { MiqQueue.delete_all } }
     let(:host2) do
@@ -144,28 +157,31 @@ RSpec.describe ManageIQ::Providers::BaseManager::MetricsCapture do
 
     context "with vmware targets" do
       it "should queue up targets properly" do
-        stub_settings_merge(:performance => {:history => {:initial_capture_days => 7}})
+        stub_settings_merge(
+          :performance => {:history => {:initial_capture_days => 7}},
+          :ems         => ems_concurrent_requests("vmware")
+        )
         ems.perf_capture_object([vm, vm2, storage, host, host2, host3]).perf_capture_queue("realtime")
 
         bod = Time.now.utc.beginning_of_day
 
         expect(queue_timings).to eq(
           "realtime"   => {
-            host  => [[]],
-            host2 => [[]],
-            host3 => [[]],
-            vm    => [[]],
-            vm2   => [[]]
+            queue_object(host)  => [[]],
+            queue_object(host2) => [[]],
+            queue_object(host3) => [[]],
+            queue_object(vm)    => [[]],
+            queue_object(vm2)   => [[]]
           },
           "historical" => {
-            host  => arg_day_range(bod - 7.days, bod + 1.day),
-            host2 => arg_day_range(bod - 7.days, bod + 1.day),
-            host3 => arg_day_range(bod - 7.days, bod + 1.day),
-            vm    => arg_day_range(bod - 7.days, bod + 1.day),
-            vm2   => arg_day_range(bod - 7.days, bod + 1.day)
+            queue_object(host)  => arg_day_range(bod - 7.days, bod + 1.day),
+            queue_object(host2) => arg_day_range(bod - 7.days, bod + 1.day),
+            queue_object(host3) => arg_day_range(bod - 7.days, bod + 1.day),
+            queue_object(vm)    => arg_day_range(bod - 7.days, bod + 1.day),
+            queue_object(vm2)   => arg_day_range(bod - 7.days, bod + 1.day)
           },
           "hourly"     => {
-            storage => [[]]
+            queue_object(storage) => [[]]
           }
         )
       end
@@ -187,14 +203,17 @@ RSpec.describe ManageIQ::Providers::BaseManager::MetricsCapture do
 
       context "executing perf_capture_timer" do
         it "should queue up enabled targets" do
-          stub_settings(:performance => {:history => {:initial_capture_days => 7}})
+          stub_settings_merge(
+            :performance => {:history => {:initial_capture_days => 7}},
+            :ems         => ems_concurrent_requests("openstack")
+          )
           ems.perf_capture_object(vms).perf_capture_queue("realtime")
 
           bod = Time.now.utc.beginning_of_day
 
           expect(queue_timings).to eq(
-            "realtime"   => vms.each_with_object({}) { |k, h| h[k] = [[]] },
-            "historical" => vms.each_with_object({}) { |k, h| h[k] = arg_day_range(bod - 7.days, bod + 1.day) }
+            "realtime"   => vms.each_with_object({}) { |k, h| h[queue_object(k)] = [[]] },
+            "historical" => vms.each_with_object({}) { |k, h| h[queue_object(k)] = arg_day_range(bod - 7.days, bod + 1.day) }
           )
         end
       end
@@ -211,102 +230,123 @@ RSpec.describe ManageIQ::Providers::BaseManager::MetricsCapture do
     let(:vm) { FactoryBot.create(:vm_perf_openstack, :ext_management_system => ems) }
 
     it "creates realtime only with last_perf_capture_on.nil? (first time) with no initial_capture" do
-      stub_performance_settings(:history => {:initial_capture_days => nil})
+      stub_settings_merge(
+        :performance => {:history => {:initial_capture_days => nil}},
+        :ems         => ems_concurrent_requests("openstack")
+      )
       MiqQueue.delete_all
       Timecop.freeze(Time.now.utc.end_of_day - 6.hours) do
         trigger_capture("realtime")
 
         expect(queue_timings).to eq(
-          "realtime" => {vm => [[]]}
+          "realtime" => {queue_object(vm) => [[]]}
         )
 
         Timecop.travel(20.minutes)
         trigger_capture("realtime")
 
         expect(queue_timings).to eq(
-          "realtime" => {vm => [[]]}
+          "realtime" => {queue_object(vm) => [[]]}
         )
       end
     end
 
     it "creates realtime and historical with last_perf_capture_on.nil? (first time) with initial_capture" do
-      stub_performance_settings(:history => {:initial_capture_days => 7})
+      stub_settings_merge(
+        :performance => {:history => {:initial_capture_days => 7}},
+        :ems         => ems_concurrent_requests("openstack")
+      )
       MiqQueue.delete_all
       Timecop.freeze(Time.now.utc.end_of_day - 6.hours) do
         trigger_capture("realtime")
 
         expect(queue_timings).to eq(
-          "realtime"   => {vm => [[]]},
-          "historical" => {vm => arg_day_range(7.days.ago.utc.beginning_of_day, 1.day.from_now.utc.beginning_of_day)}
+          "realtime"   => {queue_object(vm) => [[]]},
+          "historical" => {queue_object(vm) => arg_day_range(7.days.ago.utc.beginning_of_day, 1.day.from_now.utc.beginning_of_day)}
         )
       end
     end
 
     it "creates realtime and historical with last_perf_capture_on older than the realtime_cut_off" do
+      stub_settings_merge(
+        :ems => ems_concurrent_requests("openstack")
+      )
       MiqQueue.delete_all
       Timecop.freeze(Time.now.utc.end_of_day - 6.hours) do
         last_perf_capture_on = (10.days + 5.hours + 23.minutes).ago
         trigger_capture("realtime", last_perf_capture_on)
 
         expect(queue_timings).to eq(
-          "realtime"   => {vm => [[]]},
-          "historical" => {vm => arg_day_range(last_perf_capture_on, Time.now.utc.beginning_of_day)}
+          "realtime"   => {queue_object(vm) => [[]]},
+          "historical" => {queue_object(vm) => arg_day_range(last_perf_capture_on, Time.now.utc.beginning_of_day)}
         )
       end
     end
 
     it "creates realtime only with last_perf_capture_on newer than the realtime_cut_off" do
+      stub_settings_merge(:ems => ems_concurrent_requests("openstack"))
       MiqQueue.delete_all
       Timecop.freeze(Time.now.utc.end_of_day - 6.hours) do
         last_perf_capture_on = (2.hours + 5.minutes).ago
         trigger_capture("realtime", last_perf_capture_on)
 
         expect(queue_timings).to eq(
-          "realtime" => {vm => [[]]}
+          "realtime" => {queue_object(vm) => [[]]}
         )
       end
     end
 
     it "creates one set of realtime and historical with multiple calls" do
+      stub_settings_merge(
+        :performance => {:history => {:initial_capture_days => 7}},
+        :ems         => ems_concurrent_requests("openstack")
+      )
       MiqQueue.delete_all
       Timecop.freeze(Time.now.utc.end_of_day - 6.hours) do
         last_perf_capture_on = (10.days + 5.hours + 23.minutes).ago
         trigger_capture("realtime", last_perf_capture_on)
 
         expect(queue_timings).to eq(
-          "realtime"   => {vm => [[]]},
-          "historical" => {vm => arg_day_range(last_perf_capture_on, Time.now.utc.beginning_of_day)}
+          "realtime"   => {queue_object(vm) => [[]]},
+          "historical" => {queue_object(vm) => arg_day_range(last_perf_capture_on, Time.now.utc.beginning_of_day)}
         )
 
         Timecop.travel(20.minutes)
         trigger_capture("realtime")
 
         expect(queue_timings).to eq(
-          "realtime"   => {vm => [[]]},
-          "historical" => {vm => arg_day_range(last_perf_capture_on, Time.now.utc.beginning_of_day)}
+          "realtime"   => {queue_object(vm) => [[]]},
+          "historical" => {queue_object(vm) => arg_day_range(last_perf_capture_on, Time.now.utc.beginning_of_day)}
         )
       end
     end
 
     it "creates historical with no last_perf_capture_on" do
-      stub_performance_settings(:history => {:initial_capture_days => 7})
+      stub_settings_merge(
+        :performance => {:history => {:initial_capture_days => 7}},
+        :ems         => ems_concurrent_requests("openstack")
+      )
       MiqQueue.delete_all
       Timecop.freeze(Time.now.utc.end_of_day - 6.hours) do
         trigger_capture("historical", :start_time => 4.days.ago.utc, :end_time => 2.days.ago.utc)
 
         expect(queue_timings).to eq(
-          "historical" => {vm => arg_day_range(4.days.ago.utc, 2.days.ago.utc)}
+          "historical" => {queue_object(vm) => arg_day_range(4.days.ago.utc, 2.days.ago.utc)}
         )
       end
     end
 
     it "creates historical even with recent last_perf_capture_on" do
+      stub_settings_merge(
+        :performance => {:history => {:initial_capture_days => 7}},
+        :ems         => ems_concurrent_requests("openstack")
+      )
       MiqQueue.delete_all
       Timecop.freeze(Time.now.utc.end_of_day - 6.hours) do
         last_perf_capture_on = (2.days + 5.hours + 23.minutes).ago
         trigger_capture("historical", last_perf_capture_on, :start_time => 4.days.ago.utc, :end_time => 2.days.ago.utc)
         expect(queue_timings).to eq(
-          "historical" => {vm => arg_day_range(4.days.ago.utc, 2.days.ago.utc)}
+          "historical" => {queue_object(vm) => arg_day_range(4.days.ago.utc, 2.days.ago.utc)}
         )
       end
     end

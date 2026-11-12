@@ -7,13 +7,13 @@ RSpec.describe CustomButton do
 
       context 'by bigint column' do
         it 'orders by memory_shares column' do
-          expect(CustomButton.with_array_order(%w(300 100 200), :applies_to_id).ids).to eq([custom_button_3.id, custom_button_1.id, custom_button_2.id])
+          expect(CustomButton.with_array_order(%w[300 100 200], :applies_to_id).ids).to eq([custom_button_3.id, custom_button_1.id, custom_button_2.id])
         end
       end
 
       context 'by string column' do
         it 'orders by name column' do
-          expect(CustomButton.with_array_order(%w(BBB AAA CCC), :name, :text).ids).to eq([custom_button_2.id, custom_button_1.id, custom_button_3.id])
+          expect(CustomButton.with_array_order(%w[BBB AAA CCC], :name, :text).ids).to eq([custom_button_2.id, custom_button_1.id, custom_button_3.id])
         end
       end
     end
@@ -96,7 +96,6 @@ RSpec.describe CustomButton do
 
       context "when invoking for a particular VM" do
         before do
-          MiqRegion.seed
           @vm    = FactoryBot.create(:vm_vmware)
           @user2 = FactoryBot.create(:user_with_group)
           EvmSpecHelper.local_miq_server(:is_master => true, :zone => Zone.seed)
@@ -318,6 +317,40 @@ RSpec.describe CustomButton do
     expect { button.copy(:applies_to => service_template2) }.to(change { CustomButton.count }.by(1))
   end
 
+  describe "#visible_for_current_user?" do
+    let(:role)   { FactoryBot.create(:miq_user_role) }
+    let(:group)  { FactoryBot.create(:miq_group, :miq_user_role => role) }
+    let(:user)   { FactoryBot.create(:user, :miq_groups => [group]) }
+
+    subject { FactoryBot.build(:custom_button, :applies_to_class => Vm) }
+
+    it "returns true when visibility[:roles] contains the current user's role id" do
+      subject.visibility = {:roles => [role.id]}
+      User.with_user(user) { expect(subject.visible_for_current_user?).to be(true) }
+    end
+
+    it "returns false when visibility[:roles] does not contain the current user's role id" do
+      other_role = FactoryBot.create(:miq_user_role)
+      subject.visibility = {:roles => [other_role.id]}
+      User.with_user(user) { expect(subject.visible_for_current_user?).to be(false) }
+    end
+
+    it "returns true when visibility[:roles] is ['_ALL_']" do
+      subject.visibility = {:roles => ["_ALL_"]}
+      User.with_user(user) { expect(subject.visible_for_current_user?).to be(true) }
+    end
+
+    it "returns false when visibility does not have a :roles key" do
+      subject.visibility = {}
+      User.with_user(user) { expect(subject.visible_for_current_user?).to be(false) }
+    end
+
+    it "tolerates a legacy string role id" do
+      subject.visibility = {:roles => [role.id.to_s]}
+      User.with_user(user) { expect(subject.visible_for_current_user?).to be(true) }
+    end
+  end
+
   describe "publish custom button event" do
     let(:vm)              { FactoryBot.create(:vm_vmware) }
     let(:vm2)             { FactoryBot.create(:vm_vmware) }
@@ -327,11 +360,10 @@ RSpec.describe CustomButton do
     let(:custom_button)   { FactoryBot.create(:custom_button, :applies_to => vm.class, :resource_action => resource_action) }
 
     before do
-      MiqRegion.seed
       EvmSpecHelper.local_miq_server(:is_master => true, :zone => Zone.seed)
     end
 
-    %i(invoke invoke_async).each do |method|
+    %i[invoke invoke_async].each do |method|
       describe "##{method}", "publishes CustomButtonEvent(s)" do
         it "with a single VM" do
           Timecop.freeze(Time.now.utc) do

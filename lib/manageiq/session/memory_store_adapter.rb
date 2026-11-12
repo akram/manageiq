@@ -8,13 +8,7 @@ module ActionDispatch
     # data will only persist for as long as the ruby interpreter
     # instance does.
     class MemoryStore < AbstractStore
-      GLOBAL_HASH_TABLE = {} #:nodoc:
-
-      def delete_sessions(session_ids)
-        session_ids.each { |session_id| GLOBAL_HASH_TABLE.delete(session_id) }
-      end
-
-      private
+      GLOBAL_HASH_TABLE = {} # :nodoc:
 
       def find_session(_req, session_id)
         session_id ||= generate_sid

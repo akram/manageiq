@@ -80,7 +80,7 @@ class EvmServer
     end
   end
 
-  def self.start(*args)
+  def self.start(*_args)
     new.start
   end
 
@@ -129,8 +129,6 @@ class EvmServer
 
     MiqServer.startup!
 
-    @current_server.delete_active_log_collections_queue
-
     start_workers
 
     @current_server.update(:status => "started")
@@ -144,9 +142,7 @@ class EvmServer
   end
 
   def validate_database
-    # Remove the connection and establish a new one since reconnect! doesn't always play nice with SSL postgresql connections
-    spec_name = ActiveRecord::Base.connection_specification_name
-    ActiveRecord::Base.establish_connection(ActiveRecord::Base.remove_connection(spec_name))
+    ActiveRecord::Base.postgresql_ssl_friendly_base_reconnect
 
     # Log the Versions
     _log.info("Database Adapter: [#{ActiveRecord::Base.connection.adapter_name}], version: [#{ActiveRecord::Base.connection.database_version_details}]") if ActiveRecord::Base.connection.respond_to?(:database_version_details)
@@ -165,16 +161,16 @@ class EvmServer
 
     ipaddr, hostname, mac_address = MiqServer.get_network_information
 
-    if ipaddr =~ Regexp.union(Resolv::IPv4::Regex, Resolv::IPv6::Regex).freeze
+    if ipaddr&.match?(Regexp.union(Resolv::IPv4::Regex, Resolv::IPv6::Regex).freeze)
       server_hash[:ipaddress] = config_hash[:host] = ipaddr
     end
 
     if hostname.present? && hostname.hostname?
-      hostname = nil if hostname =~ /.*localhost.*/
+      hostname = nil if /.*localhost.*/.match?(hostname)
       server_hash[:hostname] = config_hash[:hostname] = hostname
     end
 
-    unless mac_address.blank?
+    if mac_address.present?
       server_hash[:mac_address] = mac_address
     end
 
@@ -188,13 +184,25 @@ class EvmServer
 
   def set_local_server_vm
     if @current_server.vm_id.nil?
-      vms = Vm.find_all_by_mac_address_and_hostname_and_ipaddress(@current_server.mac_address, @current_server.hostname, @current_server.ipaddress)
-      if vms.length > 1
-        _log.warn("Found multiple Vms that may represent this MiqServer: #{vms.collect(&:id).sort.inspect}")
-      elsif vms.length == 1
-        @current_server.update(:vm_id => vms.first.id)
+      vm_ids = find_vms_by_mac_address_and_hostname_and_ipaddress(@current_server.mac_address, @current_server.hostname, @current_server.ipaddress).pluck(:id)
+      if vm_ids.length > 1
+        _log.warn("Found multiple Vms that may represent this MiqServer: #{vm_ids.sort.inspect}")
+      elsif vm_ids.length == 1
+        @current_server.update(:vm_id => vm_ids.first)
       end
     end
+  end
+
+  def find_vms_by_mac_address_and_hostname_and_ipaddress(mac_address, hostname, ipaddress)
+    return Vm.none if mac_address.blank? && hostname.blank? && ipaddress.blank?
+
+    scope = Vm
+    # NOTE: nics are guest devices with an extra where()
+    scope = scope.joins(:hardware => :nics).where(:guest_devices => {:address => mac_address}) if mac_address
+    scope = scope.joins(:hardware => :networks).where(:networks => {:hostname => hostname}) if hostname
+    scope = scope.joins(:hardware => :networks).where(:networks => {:ipaddress => ipaddress}) if ipaddress
+
+    scope
   end
 
   def reset_server_runtime_info
@@ -210,9 +218,9 @@ class EvmServer
   end
 
   def log_server_info
-    _log.info("Server IP Address: #{@current_server.ipaddress}")    unless @current_server.ipaddress.blank?
-    _log.info("Server Hostname: #{@current_server.hostname}")       unless @current_server.hostname.blank?
-    _log.info("Server MAC Address: #{@current_server.mac_address}") unless @current_server.mac_address.blank?
+    _log.info("Server IP Address: #{@current_server.ipaddress}")    if @current_server.ipaddress.present?
+    _log.info("Server Hostname: #{@current_server.hostname}")       if @current_server.hostname.present?
+    _log.info("Server MAC Address: #{@current_server.mac_address}") if @current_server.mac_address.present?
     _log.info("Server GUID: #{MiqServer.my_guid}")
     _log.info("Server Zone: #{MiqServer.my_zone}")
     _log.info("Server Role: #{MiqServer.my_role}")

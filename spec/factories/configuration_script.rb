@@ -1,8 +1,8 @@
 FactoryBot.define do
   factory :configuration_script_base do
     sequence(:name) { |n| "Configuration_script_base_#{seq_padded_for_sorting(n)}" }
-    sequence(:manager_ref) { SecureRandom.random_number(100) }
-    variables { { :instance_ids => ['i-3434'] } }
+    sequence(:manager_ref)
+    variables { {:instance_ids => ['i-3434']} }
   end
 
   factory :configuration_script_payload, :class => "ConfigurationScriptPayload", :parent => :configuration_script_base
@@ -17,4 +17,10 @@ FactoryBot.define do
   factory :embedded_playbook,
           :class  => "ManageIQ::Providers::EmbeddedAnsible::AutomationManager::Playbook",
           :parent => :configuration_script_payload
+  factory :embedded_workflow,
+          :class  => "ManageIQ::Providers::Workflows::AutomationManager::Workflow",
+          :parent => :configuration_script_payload
+  factory :configuration_workflow,
+          :class  => "ManageIQ::Providers::Awx::AutomationManager::ConfigurationWorkflow",
+          :parent => :configuration_script
 end

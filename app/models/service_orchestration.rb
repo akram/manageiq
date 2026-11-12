@@ -1,7 +1,7 @@
 class ServiceOrchestration < Service
   include ServiceOrchestrationMixin
   include ServiceOrchestrationOptionsMixin
-  include_concern 'ProvisionTagging'
+  include ProvisionTagging
 
   # read from DB or parse from dialog
   def stack_name
@@ -38,7 +38,7 @@ class ServiceOrchestration < Service
 
     @deploy_stack_job = ManageIQ::Providers::CloudManager::OrchestrationTemplateRunner.create_job(job_options)
     update(:options => options.merge(:deploy_stack_job_id => @deploy_stack_job.id))
-    @deploy_stack_job.signal(:start)
+    @deploy_stack_job.signal_start
 
     wait_on_orchestration_stack
     orchestration_stack
@@ -83,6 +83,7 @@ class ServiceOrchestration < Service
 
   def indirect_vms
     return [] if orchestration_stack.nil? || orchestration_stack.new_record?
+
     orchestration_stack.indirect_vms
   end
 
@@ -98,11 +99,13 @@ class ServiceOrchestration < Service
 
   def all_vms
     return [] if orchestration_stack.nil? || orchestration_stack.new_record?
+
     orchestration_stack.vms
   end
 
   def add_resource(rsc, _options = {})
     raise "Service Orchestration subclass does not support add_resource for #{rsc.class.name}" unless rsc.try(:valid_service_orchestration_resource)
+
     super
   end
 
@@ -131,6 +134,7 @@ class ServiceOrchestration < Service
   def link_orchestration_template
     # some orchestration stacks do not have associations with their templates in their provider, we can link them here
     return if orchestration_stack.nil? || orchestration_stack.orchestration_template
+
     orchestration_stack.update(:orchestration_template => orchestration_template)
   end
 

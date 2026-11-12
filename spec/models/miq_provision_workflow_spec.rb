@@ -1,4 +1,4 @@
-silence_warnings { MiqProvisionWorkflow.const_set("DIALOGS_VIA_AUTOMATE", false) }
+silence_warnings { MiqProvisionWorkflow.const_set(:DIALOGS_VIA_AUTOMATE, false) }
 
 RSpec.describe MiqProvisionWorkflow do
   let(:admin) { FactoryBot.create(:user_admin) }
@@ -20,18 +20,25 @@ RSpec.describe MiqProvisionWorkflow do
       end
 
       context "With a Valid Template," do
+        let(:disk) { FactoryBot.create(:disk, :device_type => "disk", :size => 16.gigabytes) }
+        let(:hardware) do
+          FactoryBot.create(:hardware,
+                            :vm_or_template => @vm_template,
+                            :guest_os       => "winxppro",
+                            :memory_mb      => 512,
+                            :cpu_sockets    => 2,
+                            :disks          => [disk])
+        end
+
         before do
           @ems         = FactoryBot.create(:ems_vmware, :name => "Test EMS", :zone => server.zone)
           @host        = FactoryBot.create(:host, :name => "test_host", :hostname => "test_host", :state => 'on',
                                             :ext_management_system => @ems)
           @vm_template = FactoryBot.create(:template_vmware, :name => "template", :ext_management_system => @ems,
                                             :host => @host)
-          @hardware    = FactoryBot.create(:hardware, :vm_or_template => @vm_template, :guest_os => "winxppro",
-                                            :memory_mb => 512,
-                                            :cpu_sockets => 2)
           @switch      = FactoryBot.create(:switch, :name => 'vSwitch0', :ports => 32, :hosts => [@host])
           @lan         = FactoryBot.create(:lan, :name => "VM Network", :switch => @switch)
-          @ethernet    = FactoryBot.create(:guest_device, :hardware => @hardware, :lan => @lan,
+          @ethernet    = FactoryBot.create(:guest_device, :hardware => hardware, :lan => @lan,
                                             :device_type => 'ethernet',
                                             :controller_type => 'ethernet', :address => '00:50:56:ba:10:6b',
                                             :present => false, :start_connected => true)
@@ -94,6 +101,20 @@ RSpec.describe MiqProvisionWorkflow do
             expect(request.options[:ws_values]).to include(:abc => "true")
           end
         end
+
+        context "with a disk with nil size" do
+          let(:disk) { FactoryBot.create(:disk, :device_type => "disk", :size => nil) }
+
+          it "should create an MiqRequest when calling from_ws" do
+            FactoryBot.create(:classification_cost_center_with_tags)
+            request = ManageIQ::Providers::Vmware::InfraManager::ProvisionWorkflow.from_ws(
+              "1.0", admin, "template", "target", false, "cc|001|environment|test", ""
+            )
+            expect(request).to be_a_kind_of(MiqRequest)
+
+            expect(request.options[:vm_tags]).to eq([Classification.lookup_by_name("cc/001").id])
+          end
+        end
       end
     end
   end
@@ -124,16 +145,6 @@ RSpec.describe MiqProvisionWorkflow do
     it 'with archived source' do
       expect(template.archived?).to be_truthy
       expect(described_class.class_for_source(template.id)).to eq(workflow_class)
-    end
-  end
-
-  context '.class_for_platform' do
-    {
-      "openstack" => ManageIQ::Providers::Openstack::CloudManager::ProvisionWorkflow,
-      "redhat"    => ManageIQ::Providers::Redhat::InfraManager::ProvisionWorkflow,
-      "vmware"    => ManageIQ::Providers::Vmware::InfraManager::ProvisionWorkflow,
-    }.each do |k, v|
-      it(k) { expect(described_class.class_for_platform(k)).to eq(v) }
     end
   end
 end

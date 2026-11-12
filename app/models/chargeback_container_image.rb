@@ -19,7 +19,7 @@ class ChargebackContainerImage < Chargeback
     :memory_allocated_metric    => :float,
     :net_io_used_cost           => :float,
     :net_io_used_metric         => :float,
-    :total_cost                 => :float,
+    :total_cost                 => :float
   )
 
   def self.build_results_for_report_ChargebackContainerImage(options)
@@ -50,8 +50,8 @@ class ChargebackContainerImage < Chargeback
       @data_index.store_path(:id, :container_projects, container_image.id, container_image.container_projects)
     end
 
-    @unknown_project ||= OpenStruct.new(:id => 0, :name => _('Unknown Project'), :ems_ref => _('Unknown'))
-    @unknown_image ||= OpenStruct.new(:id => 0, :full_name => _('Unknown Image'))
+    @unknown_project = OpenStruct.new(:id => 0, :name => _('Unknown Project'), :ems_ref => _('Unknown'))
+    @unknown_image   = OpenStruct.new(:id => 0, :full_name => _('Unknown Image'))
 
     load_custom_attribute_groupby(options[:groupby_label]) if options[:groupby_label].present?
 
@@ -61,7 +61,7 @@ class ChargebackContainerImage < Chargeback
   end
 
   def self.load_custom_attribute_groupby(groupby_label)
-    report_cb_model(self.name).safe_constantize.add_custom_attribute(groupby_label_method(groupby_label))
+    report_cb_model(name).safe_constantize.add_custom_attribute(groupby_label_method(groupby_label))
   end
 
   def self.groupby_label_method(groupby_label)
@@ -92,7 +92,7 @@ class ChargebackContainerImage < Chargeback
   end
 
   def self.report_static_cols
-    %w(project_name image_name)
+    %w[project_name image_name]
   end
 
   def self.report_col_options

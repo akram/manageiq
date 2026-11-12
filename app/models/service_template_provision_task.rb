@@ -9,18 +9,24 @@ class ServiceTemplateProvisionTask < MiqRequestTask
     ServiceTemplateProvisionTask
   end
 
+  def statemachine_task_status
+    %w[finished provisioned].include?(state) ? status.to_s.downcase : "retry"
+  end
+
   def my_zone
     dialog_zone || source.my_zone || MiqServer.my_zone
   end
 
   def provision_priority
     return 0 if service_resource.nil?
+
     service_resource.provision_index
   end
 
   def sibling_sequence_run_now?
     return true  if miq_request_task.nil? || miq_request_task.miq_request_tasks.count == 1
     return false if miq_request_task.miq_request_tasks.detect { |t| t.provision_priority < provision_priority && t.state != "finished" }
+
     true
   end
 
@@ -29,6 +35,7 @@ class ServiceTemplateProvisionTask < MiqRequestTask
     return true   if parent.nil?
     return false  unless parent.group_sequence_run_now?
     return false  unless sibling_sequence_run_now?
+
     true
   end
 
@@ -40,7 +47,7 @@ class ServiceTemplateProvisionTask < MiqRequestTask
     end
 
     if req_obj.kind_of?(ServiceTemplateProvisionRequest)
-      result = "Provisioning Service [#{svc_target_name}] from [#{prov_source.name}]"
+      result = _("Provisioning Service [%{svc_target_name}] from [%{prov_source_name}]") % {:svc_target_name => svc_target_name, :prov_source_name => prov_source.name}
     else
       service_resource = prov_source
       rsc_name = service_resource.name if service_resource.respond_to?(:name)
@@ -56,11 +63,11 @@ class ServiceTemplateProvisionTask < MiqRequestTask
 
       result = case req_template
                when ServiceTemplate
-                 "Provisioning Service [#{rsc_name}] for Service [#{svc_target_name}]"
+                 _("Provisioning Service [%{rsc_name}] for Service [%{svc_target_name}]") % {:rsc_name => rsc_name, :svc_target_name => svc_target_name}
                when MiqProvisionRequestTemplate
-                 "Provisioning VM [#{rsc_name}] for Service [#{svc_target_name}]"
+                 _("Provisioning VM [%{rsc_name}] for Service [%{svc_target_name}]") % {:rsc_name => rsc_name, :svc_target_name => svc_target_name}
                else
-                 "Provisioning [#{rsc_name}] for Service [#{svc_target_name}]"
+                 _("Provisioning [%{rsc_name}] for Service [%{svc_target_name}]") % {:rsc_name => rsc_name, :svc_target_name => svc_target_name}
                end
     end
 
@@ -88,7 +95,7 @@ class ServiceTemplateProvisionTask < MiqRequestTask
       _log.info(message)
       update_and_notify_parent(:state => 'provisioned', :message => message)
     else
-      miq_request_tasks.each(&:deliver_to_automate)
+      miq_request_tasks.each(&:deliver_queue)
       message = "Service Provision started"
       _log.info(message)
       update_and_notify_parent(:message => message)
@@ -105,7 +112,7 @@ class ServiceTemplateProvisionTask < MiqRequestTask
       :instance_id    => id,
       :method_name    => "do_post_provision",
       :zone           => my_zone,
-      :deliver_on     => 1.minutes.from_now.utc,
+      :deliver_on     => 1.minute.from_now.utc,
       :tracking_label => tracking_label_id,
       :miq_callback   => {:class_name => self.class.name, :instance_id => id, :method_name => :execute_callback}
     )
@@ -117,60 +124,58 @@ class ServiceTemplateProvisionTask < MiqRequestTask
   end
 
   def deliver_to_automate(req_type = request_type, _zone = nil)
-    task_check_on_delivery
+    args = {
+      :object_type      => self.class.name,
+      :object_id        => id,
+      :namespace        => "Service/Provisioning/StateMachines",
+      :class_name       => "ServiceProvision_Template",
+      :instance_name    => req_type,
+      :automate_message => "create",
+      :attrs            => dialog_values.merge("request" => req_type)
+    }
 
-    _log.info("Queuing #{request_class::TASK_DESCRIPTION}: [#{description}]...")
+    # Automate entry point overrides from the resource_action
+    ra = resource_action
 
-    if self.class::AUTOMATE_DRIVES
-      dialog_values = options[:dialog] || {}
-      dialog_values["request"] = req_type
-
-      args = {
-        :object_type      => self.class.name,
-        :object_id        => id,
-        :namespace        => "Service/Provisioning/StateMachines",
-        :class_name       => "ServiceProvision_Template",
-        :instance_name    => req_type,
-        :automate_message => "create",
-        :attrs            => dialog_values
-      }
-
-      # Automate entry point overrides from the resource_action
-      ra = resource_action
-
-      unless ra.nil?
-        args[:namespace]        = ra.ae_namespace unless ra.ae_namespace.blank?
-        args[:class_name]       = ra.ae_class     unless ra.ae_class.blank?
-        args[:instance_name]    = ra.ae_instance  unless ra.ae_instance.blank?
-        args[:automate_message] = ra.ae_message   unless ra.ae_message.blank?
-        args[:attrs].merge!(ra.ae_attributes)
+    unless ra.nil?
+      if ra.configuration_script_payload
+        args[:namespace]        = "Service/Provisioning/StateMachines"
+        args[:class_name]       = "ServiceProvision_Template"
+        args[:instance_name]    = "CatalogItemInitialization"
+        args[:automate_message] = nil
+      else
+        args[:namespace]        = ra.ae_namespace if ra.ae_namespace.present?
+        args[:class_name]       = ra.ae_class     if ra.ae_class.present?
+        args[:instance_name]    = ra.ae_instance  if ra.ae_instance.present?
+        args[:automate_message] = ra.ae_message   if ra.ae_message.present?
       end
 
-      args[:attrs].merge!(MiqAeEngine.create_automation_attributes(destination.class.base_model.name => destination)) if destination.present?
-      args[:user_id]      = get_user.id
-      args[:miq_group_id] = get_user.current_group.id
-      args[:tenant_id]    = get_user.current_tenant.id
-
-      MiqQueue.put(
-        :class_name     => 'MiqAeEngine',
-        :method_name    => 'deliver',
-        :args           => [args],
-        :role           => 'automate',
-        :zone           => options.fetch(:miq_zone, my_zone),
-        :tracking_label => tracking_label_id
-      )
-      update_and_notify_parent(:state => "pending", :status => "Ok",  :message => "Automation Starting")
-    else
-      execute_queue
+      args[:attrs].merge!(ra.ae_attributes)
     end
+
+    args[:attrs].merge!(MiqAeEngine.create_automation_attributes(destination.class.base_model.name => destination)) if destination.present?
+    args[:user_id]      = get_user.id
+    args[:miq_group_id] = get_user.current_group.id
+    args[:tenant_id]    = get_user.current_tenant.id
+
+    MiqQueue.put(
+      :class_name     => 'MiqAeEngine',
+      :method_name    => 'deliver',
+      :args           => [args],
+      :role           => 'automate',
+      :zone           => options.fetch(:miq_zone, my_zone),
+      :tracking_label => tracking_label_id
+    )
+    update_and_notify_parent(:state => "pending", :status => "Ok", :message => "Automation Starting")
   end
 
   def resource_action
-    source.resource_actions.detect { |ra| ra.action == 'Provision' } if source.respond_to?(:resource_actions)
+    @resource_action ||= source.resource_actions.find_by(:action => 'Provision') if source.respond_to?(:resource_actions)
   end
 
   def service_resource
     return nil if options[:service_resource_id].blank?
+
     ServiceResource.find_by(:id => options[:service_resource_id])
   end
 
@@ -184,7 +189,7 @@ class ServiceTemplateProvisionTask < MiqRequestTask
 
   def before_ae_starts(_options)
     reload
-    if state.to_s.downcase.in?(%w(pending queued))
+    if state.to_s.downcase.in?(%w[pending queued])
       _log.info("Executing #{request_class::TASK_DESCRIPTION} request: [#{description}]")
       update_and_notify_parent(:state => "active", :status => "Ok", :message => "In Process")
     end

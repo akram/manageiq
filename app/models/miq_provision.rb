@@ -1,41 +1,69 @@
 class MiqProvision < MiqProvisionTask
   include MiqProvisionMixin
-  include_concern 'Automate'
-  include_concern 'CustomAttributes'
-  include_concern 'Description'
-  include_concern 'Genealogy'
-  include_concern 'PostInstallCallback'
-  include_concern 'Helper'
-  include_concern 'Iso'
-  include_concern 'Naming'
-  include_concern 'OptionsHelper'
-  include_concern 'Ownership'
-  include_concern 'Pxe'
-  include_concern 'Retirement'
-  include_concern 'Service'
-  include_concern 'StateMachine'
-  include_concern 'Tagging'
+  include Automate
+  include CustomAttributes
+  include Description
+  include Genealogy
+  include PostInstallCallback
+  include Helper
+  include Iso
+  include Naming
+  include OptionsHelper
+  include Ownership
+  include Pxe
+  include Retirement
+  include Service
+  include StateMachine
+  include Tagging
 
-  alias_attribute :miq_provision_request, :miq_request   # Legacy provisioning support
-  alias_attribute :provision_type,        :request_type  # Legacy provisioning support
-  alias_attribute :vm,                    :destination
-  alias_attribute :vm_template,           :source
-
+  alias_attribute :provision_type,        :request_type # Legacy provisioning support
   before_create :set_template_and_networking
 
   virtual_belongs_to :miq_provision_request  # Legacy provisioning support
   virtual_belongs_to :vm
   virtual_belongs_to :vm_template
   virtual_column     :placement_auto, :type => :boolean
-  virtual_column     :provision_type, :type => :string  # Legacy provisioning support
 
   scope :with_miq_request_id, ->(request_id) { where(:miq_request_id => request_id) }
 
   CLONE_SYNCHRONOUS     = false
   CLONE_TIME_LIMIT      = 4.hours
 
+  # Legacy provisioning support
+  def miq_provision_request
+    miq_request
+  end
+
+  def miq_provision_request=(object)
+    self.miq_request = object
+  end
+
+  def vm
+    destination
+  end
+
+  def vm=(object)
+    self.destination = object
+  end
+
+  def vm_template
+    source
+  end
+
+  def vm_template=(object)
+    self.source = object
+  end
+
   def self.base_model
     MiqProvision
+  end
+
+  def statemachine_task_status
+    if %w[finished provisioned].include?(state)
+      status.to_s.downcase == "error" || vm.nil? ? "error" : "ok"
+    else
+      "retry"
+    end
   end
 
   def set_template_and_networking
@@ -45,7 +73,7 @@ class MiqProvision < MiqProvisionTask
     set_dns_domain
   end
 
-  def deliver_to_automate
+  def deliver_to_automate(*)
     super("vm_provision", my_zone)
   end
 
@@ -87,6 +115,10 @@ class MiqProvision < MiqProvisionTask
     else
       update_and_notify_parent(:state => "finished", :status => "Error")
     end
+  end
+
+  def configuration_script_inputs
+    options
   end
 
   def self.get_description(prov_obj, vm_name)

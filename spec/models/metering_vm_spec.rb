@@ -1,5 +1,6 @@
 RSpec.describe MeteringVm do
   include Spec::Support::ChargebackHelper
+  include Spec::Support::SupportsHelper
 
   let(:admin) { FactoryBot.create(:user_admin) }
   let(:base_options) do
@@ -33,11 +34,10 @@ RSpec.describe MeteringVm do
   let(:ems_cluster) { FactoryBot.create(:ems_cluster, :ext_management_system => ems, :hosts => [host]) }
 
   before do
-    MiqRegion.seed
     ChargebackRateDetailMeasure.seed
     ChargeableField.seed
     MiqEnterprise.seed
-    EvmSpecHelper.create_guid_miq_server_zone
+    EvmSpecHelper.local_miq_server
     Timecop.travel(report_run_time)
   end
 
@@ -68,20 +68,21 @@ RSpec.describe MeteringVm do
                          :disks           => [FactoryBot.create(:disk, :size => disk_b)])
     end
 
-    context 'for SCVMM (hyper-v)' do
+    context 'for any virtual machine' do
+      let(:tag) { Tag.find_by(:name => "/managed/environment/prod") }
       before do
         cat = FactoryBot.create(:classification, :description => "Environment", :name => "environment", :single_value => true, :show => true)
         FactoryBot.create(:classification, :name => "prod", :description => "Production", :parent_id => cat.id)
-        @tag = Tag.find_by(:name => "/managed/environment/prod")
       end
 
       let!(:vm1) do
-        vm = FactoryBot.create(:vm_microsoft, :hardware => hardware, :created_on => report_run_time - 1.day)
-        vm.tag_with(@tag.name, :ns => '*')
-        vm
+        FactoryBot.create(:vm_infra, :hardware => hardware, :created_on => report_run_time - 1.day).tap do |vm|
+          vm.tag_with(tag.name, :ns => '*')
+          stub_supports(vm, :capture)
+        end
       end
 
-      let(:options) { base_options.merge(:interval => 'daily', :tag => '/managed/environment/prod') }
+      let(:options) { base_options.merge(:interval => 'daily', :tag => '/managed/environment/prod', :include_metrics => false) }
 
       subject { MeteringVm.build_results_for_report_ChargebackVm(options).first.first }
 
@@ -94,6 +95,18 @@ RSpec.describe MeteringVm do
         expect(subject.metering_used_metric).to     eq(0) # metric rollups are not used
         expect(subject.cpu_allocated_metric).to     eq(cores)
         expect(subject.storage_allocated_metric).to eq(disk_b)
+      end
+
+      context 'metrics are included (but do not have any)' do
+        it 'is not generating report with options[:include_metrics]=true' do
+          options[:include_metrics] = true
+          expect(subject).to be_nil
+        end
+
+        it 'is not generating report with options[:include_metrics]=nil(default value)' do
+          options[:include_metrics] = nil
+          expect(subject).to be_nil
+        end
       end
     end
   end

@@ -1,5 +1,5 @@
-RSpec.describe YAMLImportExportMixin do
-  let(:test_class) { Class.new { include YAMLImportExportMixin } }
+RSpec.describe YamlImportExportMixin do
+  let(:test_class) { Class.new { include YamlImportExportMixin } }
 
   before do
     @report1 = FactoryBot.create(:miq_report, :name => "test_report_1")
@@ -45,15 +45,47 @@ RSpec.describe YAMLImportExportMixin do
     subject { MiqReport }
 
     it "valid YAML file" do
-      @fd = StringIO.new("---\n- MiqReport:\n")
+      fd = StringIO.new("---\n- MiqReport:\n")
       # if it gets to import_from_array, then it did not choke on yml
       expect(subject).to receive(:import_from_array)
-      subject.import(@fd)
+      subject.import(fd)
     end
 
     it "invalid YAML file" do
-      @fd = StringIO.new("---\na:\nb")
-      expect { subject.import(@fd) }.to raise_error("Invalid YAML file")
+      fd = StringIO.new("---\na:\nb")
+      expect { subject.import(fd) }.to raise_error("Invalid YAML file")
+    end
+
+    it "invalid YAML file for hacked payloads" do
+      fd = StringIO.new(<<~YAML)
+        ---
+        - !ruby/object:Gem::Installer
+            i: x
+        - !ruby/object:Gem::SpecFetcher
+            i: y
+        - !ruby/object:Gem::Requirement
+          requirements:
+            !ruby/object:Gem::Package::TarReader
+            io: &1 !ruby/object:Net::BufferedIO
+              io: &1 !ruby/object:Gem::Package::TarReader::Entry
+                read: 0
+                header: "abc"
+              debug_output: &1 !ruby/object:Net::WriteAdapter
+                socket: &1 !ruby/object:PrettyPrint
+                  output: !ruby/object:Net::WriteAdapter
+                    socket: &1 !ruby/module 'Kernel'
+                    method_id: :eval
+                  newline: FactoryBot.create(:miq_report, :name => "hacked")
+                  buffer: {}
+                  group_stack:
+                  - !ruby/object:PrettyPrint::Group
+                    break: true
+                method_id: :breakable
+      YAML
+
+      expect { subject.import(fd) }.to raise_error("Invalid YAML file")
+
+      expect(subject.where(:name => "hacked")).to_not exist
     end
   end
 

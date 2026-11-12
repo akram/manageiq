@@ -2,11 +2,11 @@ RSpec.describe Tenant do
   include_examples ".seed called multiple times", 1
 
   let(:tenant) { described_class.new(:domain => 'x.com', :parent => default_tenant) }
-  let(:user_admin) {
+  let(:user_admin) do
     user = FactoryBot.create(:user_admin)
     allow(user).to receive(:get_timezone).and_return("UTC")
     user
-  }
+  end
 
   let(:default_tenant) do
     root_tenant
@@ -18,7 +18,7 @@ RSpec.describe Tenant do
   end
 
   it "doesn't access database when unchanged model is saved" do
-    m = described_class.create!(:parent => described_class.create!)
+    m = described_class.create!(:parent => FactoryBot.create(:tenant, :parent => root_tenant))
     expect { m.valid? }.not_to make_database_queries
   end
 
@@ -35,7 +35,7 @@ RSpec.describe Tenant do
     end
 
     it "can update the root_tenant" do
-      root_tenant.update!(:name => 'newname', :use_config_for_attributes => false)
+      root_tenant.update!(:name => 'newname')
       expect(root_tenant.reload.name).to eq('newname')
     end
   end
@@ -169,18 +169,6 @@ RSpec.describe Tenant do
         FactoryBot.create(:tenant, :name => "common", :parent => parent2)
       end.not_to raise_error
     end
-
-    context "for root_tenants" do
-      it "reads settings" do
-        stub_settings(:server => {:company => "settings"})
-        expect(root_tenant.name).to eq("settings")
-      end
-
-      it "can disable reading from configurations" do
-        root_tenant.use_config_for_attributes = false
-        expect(root_tenant.name).not_to eq("settings")
-      end
-    end
   end
 
   it "#parent_name" do
@@ -203,7 +191,6 @@ RSpec.describe Tenant do
 
   context "#validate_only_one_root" do
     it "allows child tenants" do
-      stub_settings(:server => {})
       root_tenant.children.create!
     end
 
@@ -232,12 +219,15 @@ RSpec.describe Tenant do
     end
   end
 
+  # This may be contrived. Since a tenant in another region will have a different root
+  # so just uniqueness of name among parent tenants is probably good enough
   context "validate multi region" do
     let(:other_region_id) { ApplicationRecord.id_in_region(1, ApplicationRecord.my_region_number + 1) }
 
     it "allows same name as tenant in a different region" do
-      described_class.create(:name => "GT", :description => "GT Tenant in other region", :id => other_region_id)
-      expect(described_class.new(:name => "GT", :description => "GT Tenant in this region").valid?).to be_truthy
+      described_class.create!(:name => "GT", :description => "GT Tenant in other region", :id => other_region_id, :parent => root_tenant)
+      new_tenant = described_class.new(:name => "GT", :description => "GT Tenant in this region", :parent => root_tenant)
+      expect(new_tenant.valid?).to be_truthy
     end
   end
 
@@ -308,16 +298,6 @@ RSpec.describe Tenant do
     end
   end
 
-  describe "#reads_settings" do
-    it "defaults to false" do
-      expect(tenant).not_to be_use_config_for_attributes
-    end
-
-    it "defaults to true for root_tenant" do
-      expect(root_tenant).to be_use_config_for_attributes
-    end
-  end
-
   context "#admins" do
     let(:self_service_role) { FactoryBot.create(:miq_user_role, :settings => {:restrictions => {:vms => :user}}) }
     let(:admin_with_brand) { FactoryBot.create(:miq_user_role, :name => "tenant_admin-brand-master") }
@@ -365,10 +345,10 @@ RSpec.describe Tenant do
         dom3 = FactoryBot.create(:miq_ae_domain, :name => 'A', :tenant_id => root_tenant.id)
         dom4 = FactoryBot.create(:miq_ae_domain, :name => 'B', :tenant_id => root_tenant.id)
 
-        expect(root_tenant.visible_domains.collect(&:name)).to eq(%w(B A Redhat ManageIQ))
+        expect(root_tenant.visible_domains.collect(&:name)).to eq(%w[B A Redhat ManageIQ])
         ids = [dom4.id, dom3.id]
         root_tenant.reset_domain_priority_by_ordered_ids(ids)
-        expect(root_tenant.visible_domains.collect(&:name)).to eq(%w(A B Redhat ManageIQ))
+        expect(root_tenant.visible_domains.collect(&:name)).to eq(%w[A B Redhat ManageIQ])
         dom4.reload
         expect(dom4.priority).to eq(2)
       end
@@ -382,10 +362,10 @@ RSpec.describe Tenant do
         FactoryBot.create(:miq_ae_domain, :name => 'T1_B', :tenant_id => t1.id)
         dom5 = FactoryBot.create(:miq_ae_domain, :name => 'T1_1_A', :tenant_id => t1_1.id)
         dom6 = FactoryBot.create(:miq_ae_domain, :name => 'T1_1_B', :tenant_id => t1_1.id)
-        expect(t1_1.visible_domains.collect(&:name)).to eq(%w(T1_1_B T1_1_A T1_B T1_A Redhat ManageIQ))
+        expect(t1_1.visible_domains.collect(&:name)).to eq(%w[T1_1_B T1_1_A T1_B T1_A Redhat ManageIQ])
         ids = [dom6.id, dom5.id]
         t1_1.reset_domain_priority_by_ordered_ids(ids)
-        expect(t1_1.visible_domains.collect(&:name)).to eq(%w(T1_1_A T1_1_B T1_B T1_A Redhat ManageIQ))
+        expect(t1_1.visible_domains.collect(&:name)).to eq(%w[T1_1_A T1_1_B T1_B T1_A Redhat ManageIQ])
       end
     end
 
@@ -396,7 +376,7 @@ RSpec.describe Tenant do
       FactoryBot.create(:miq_ae_system_domain, :name => 'DOM10', :priority => 10,
                          :tenant_id => root_tenant.id, :enabled => false)
 
-      expect(t1_1.sequenceable_domains.collect(&:name)).to eq(%w(DOM15))
+      expect(t1_1.sequenceable_domains.collect(&:name)).to eq(%w[DOM15])
     end
 
     context "visibility" do
@@ -425,22 +405,22 @@ RSpec.describe Tenant do
 
       it "#visibile_domains sub_tenant" do
         t1_1
-        expect(t1_1.visible_domains.collect(&:name)).to eq(%w(DOM5 DOM3 DOM1 DOM15 DOM10))
+        expect(t1_1.visible_domains.collect(&:name)).to eq(%w[DOM5 DOM3 DOM1 DOM15 DOM10])
       end
 
       it "#enabled_domains sub_tenant" do
         t1_1
-        expect(t1_1.enabled_domains.collect(&:name)).to eq(%w(DOM5 DOM3 DOM1 DOM15))
+        expect(t1_1.enabled_domains.collect(&:name)).to eq(%w[DOM5 DOM3 DOM1 DOM15])
       end
 
       it "#editable domains sub_tenant" do
         t1_1
-        expect(t1_1.editable_domains.collect(&:name)).to eq(%w(DOM5 DOM3))
+        expect(t1_1.editable_domains.collect(&:name)).to eq(%w[DOM5 DOM3])
       end
 
       it "#visible_domains tenant" do
         t2
-        expect(t2.visible_domains.collect(&:name)).to eq(%w(DOM2 DOM15 DOM10))
+        expect(t2.visible_domains.collect(&:name)).to eq(%w[DOM2 DOM15 DOM10])
       end
     end
 
@@ -537,7 +517,7 @@ RSpec.describe Tenant do
 
       tq = default_tenant.tenant_quotas
       expect(tq.length).to eql 2
-      expect(tq.map(&:name).sort).to eql %w(mem_allocated vms_allocated)
+      expect(tq.map(&:name).sort).to eql %w[mem_allocated vms_allocated]
     end
 
     it "deletes existing quotas when nil value is passed" do
@@ -792,10 +772,6 @@ RSpec.describe Tenant do
   end
 
   describe ".tenant_and_project_names" do
-    before do
-      stub_settings(:server => {:company => "root"})
-    end
-
     # root
     #   ten1
     #     ten2
@@ -805,7 +781,7 @@ RSpec.describe Tenant do
 
       User.with_user(user_admin) do
         tenants, projects = Tenant.tenant_and_project_names
-        expect(tenants).to eq([["root", root_tenant.id], ["root/ten1", ten1.id], ["root/ten1/ten2", ten2.id]])
+        expect(tenants).to eq([["My Company", root_tenant.id], ["My Company/ten1", ten1.id], ["My Company/ten1/ten2", ten2.id]])
         expect(projects).to be_empty
       end
     end
@@ -819,8 +795,8 @@ RSpec.describe Tenant do
 
       User.with_user(user_admin) do
         tenants, projects = Tenant.tenant_and_project_names
-        expect(tenants).to eq([["root", root_tenant.id]])
-        expect(projects).to eq([["root/proj1", proj1.id], ["root/proj2", proj2.id]])
+        expect(tenants).to eq([["My Company", root_tenant.id]])
+        expect(projects).to eq([["My Company/proj1", proj1.id], ["My Company/proj2", proj2.id]])
       end
     end
 
@@ -841,10 +817,10 @@ RSpec.describe Tenant do
 
       User.with_user(user_admin) do
         tenants, projects = Tenant.tenant_and_project_names
-        expect(tenants.map(&:first)).to eq(%w(root root/ten1 root/ten2 root/ten3))
+        expect(tenants.map(&:first)).to eq(["My Company", "My Company/ten1", "My Company/ten2", "My Company/ten3"])
         expect(tenants.first.last).to eq(root_tenant.id)
 
-        expect(projects.map(&:first)).to eq(%w(root/proj3 root/ten1/proj1 root/ten2/proj2))
+        expect(projects.map(&:first)).to eq(["My Company/proj3", "My Company/ten1/proj1", "My Company/ten2/proj2"])
       end
     end
   end
@@ -933,6 +909,7 @@ RSpec.describe Tenant do
   end
 
   context "using more regions with factory" do
+    before { MiqRegion.destroy_all }
     let!(:other_region) { FactoryBot.create(:miq_region) }
 
     context "without MiqRegion.seed" do
@@ -957,7 +934,7 @@ RSpec.describe Tenant do
       end
 
       it "raises error when region is not passed" do
-        exception_message = "You need to pass specific region  with :other_region: \n"\
+        exception_message = "You need to pass specific region  with :other_region: \n" \
                             "FactoryBot.create(:tenant, :in_other_region, :other_region => <region>) "
         expect { FactoryBot.create(:tenant, :in_other_region) }.to raise_error(exception_message)
       end

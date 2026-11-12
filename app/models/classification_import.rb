@@ -95,6 +95,7 @@ class ClassificationImport
         data.each do |category, entries|
           cat = Classification.find_by(:description => category)
           next unless cat
+
           entries.each do |ent|
             cat.entries.each do |e|
               if e.description == ent
@@ -107,5 +108,11 @@ class ClassificationImport
         end
       end
     end
+  end
+
+  # part of the errors interface
+  # not bothering with localization
+  def self.human_attribute_name(attr_name, *_)
+    attr_name
   end
 end

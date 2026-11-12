@@ -73,12 +73,12 @@ RSpec.describe ResourceActionWorkflow do
           it "creates requests" do
             EvmSpecHelper.local_miq_server
             expect(subject).to receive(:make_request).and_call_original
-            expect(AuditEvent).to receive(:success).with(
-              :event        => "service_reconfigure_request_created",
-              :target_class => "Service",
-              :userid       => admin.userid,
-              :message      => "Service Reconfigure requested by <#{admin.userid}> for Service:[#{target.id}]"
-            )
+            expect(AuditEvent).to receive(:success).with({
+                                                           :event        => "service_reconfigure_request_created",
+                                                           :target_class => "Service",
+                                                           :userid       => admin.userid,
+                                                           :message      => "Service Reconfigure requested by <#{admin.userid}> for Service:[#{target.id}]"
+                                                         })
             expect(dialog_fields(@dialog)).to eq("field_1" => nil, "field_2" => nil)
             response = subject.submit_request(data)
             expect(response).to include(:errors => [])
@@ -94,7 +94,7 @@ RSpec.describe ResourceActionWorkflow do
           it "calls automate" do
             EvmSpecHelper.local_miq_server
             expect(subject).not_to receive(:make_request)
-            expect_any_instance_of(ResourceAction).to receive(:deliver_to_automate_from_dialog).and_call_original
+            expect_any_instance_of(ResourceAction).to receive(:deliver_queue).and_call_original
             expect(MiqAeEngine).to receive(:deliver_queue) # calls into automate
             expect(AuditEvent).not_to receive(:success)
             expect(dialog_fields(@dialog)).to eq("field_2" => nil, "field_1" => nil)
@@ -114,7 +114,7 @@ RSpec.describe ResourceActionWorkflow do
 
           it "calls automate" do
             expect(subject).not_to receive(:make_request)
-            expect_any_instance_of(ResourceAction).to receive(:deliver_to_automate_from_dialog)
+            expect_any_instance_of(ResourceAction).to receive(:deliver_queue)
 
             subject.submit_request(data)
             expect(dialog_fields(@dialog)).to eq("field_1" => nil, "field_2" => nil)
@@ -122,7 +122,7 @@ RSpec.describe ResourceActionWorkflow do
 
           it "calls automate with miq_task" do
             options[:open_url] = true
-            allow(resource_action).to(receive(:deliver_to_automate_from_dialog))
+            allow(resource_action).to(receive(:deliver_queue))
             allow(subject).to(receive(:load_resource_action)).and_return(resource_action)
 
             result   = subject.submit_request
@@ -143,12 +143,12 @@ RSpec.describe ResourceActionWorkflow do
           it "creates requests" do
             EvmSpecHelper.local_miq_server
             expect(subject).to receive(:make_request).and_call_original
-            expect(AuditEvent).to receive(:success).with(
-              :event        => "service_reconfigure_request_created",
-              :target_class => "Service",
-              :userid       => admin.userid,
-              :message      => "Service Reconfigure requested by <#{admin.userid}> for Service:[#{target.id}]"
-            )
+            expect(AuditEvent).to receive(:success).with({
+                                                           :event        => "service_reconfigure_request_created",
+                                                           :target_class => "Service",
+                                                           :userid       => admin.userid,
+                                                           :message      => "Service Reconfigure requested by <#{admin.userid}> for Service:[#{target.id}]"
+                                                         })
             response = subject.submit_request(data)
             expect(dialog_fields(@dialog)).to eq("field_1" => "new_value", "field_2" => nil)
             expect(response).to include(:errors => [])
@@ -164,7 +164,7 @@ RSpec.describe ResourceActionWorkflow do
           it "calls automate" do
             EvmSpecHelper.local_miq_server
             expect(subject).not_to receive(:make_request)
-            expect_any_instance_of(ResourceAction).to receive(:deliver_to_automate_from_dialog).and_call_original
+            expect_any_instance_of(ResourceAction).to receive(:deliver_queue).and_call_original
             expect(MiqAeEngine).to receive(:deliver_queue) # calls into automate
             expect(AuditEvent).not_to receive(:success)
             response = subject.submit_request(data)
@@ -184,7 +184,7 @@ RSpec.describe ResourceActionWorkflow do
 
           it "calls automate" do
             expect(subject).not_to receive(:make_request)
-            expect_any_instance_of(ResourceAction).to receive(:deliver_to_automate_from_dialog)
+            expect_any_instance_of(ResourceAction).to receive(:deliver_queue)
 
             subject.submit_request(data)
             expect(dialog_fields(@dialog)).to eq("field_2" => nil, "field_1" => "new_value")
@@ -192,7 +192,7 @@ RSpec.describe ResourceActionWorkflow do
 
           it "calls automate with miq_task" do
             options[:open_url] = true
-            allow(resource_action).to(receive(:deliver_to_automate_from_dialog))
+            allow(resource_action).to(receive(:deliver_queue))
             allow(subject).to(receive(:load_resource_action)).and_return(resource_action)
 
             result   = subject.submit_request

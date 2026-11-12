@@ -4,12 +4,12 @@ class ContainerBuild < ApplicationRecord
   belongs_to :ext_management_system, :foreign_key => "ems_id"
   belongs_to :container_project
 
-  has_many :labels, -> { where(:section => "labels") },
+  has_many :labels, -> { where(:section => "labels") }, # rubocop:disable Rails/HasManyOrHasOneDependent
            :class_name => "CustomAttribute",
            :as         => :resource,
-           :dependent  => :destroy
+           :inverse_of => :resource
 
-  has_many :container_build_pods
+  has_many :container_build_pods # delete to be handled by refresh
 
   acts_as_miq_taggable
 end

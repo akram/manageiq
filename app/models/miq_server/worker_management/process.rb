@@ -1,7 +1,24 @@
 class MiqServer::WorkerManagement::Process < MiqServer::WorkerManagement
   def sync_from_system
     require "sys/proctable"
-    self.miq_processes = Sys::ProcTable.ps.select { |proc| proc.ppid == my_server.pid }
+    self.miq_processes        = Sys::ProcTable.ps.select { |proc| proc.ppid == my_server.pid }
+    self.miq_processes_by_pid = miq_processes.index_by(&:pid)
+  end
+
+  def sync_starting_workers
+    sync_from_system
+    sync_starting_rails_workers
+    sync_starting_non_rails_workers
+
+    MiqWorker.find_all_starting.to_a
+  end
+
+  def sync_stopping_workers
+    sync_from_system
+    sync_stopping_rails_workers
+    sync_stopping_non_rails_workers
+
+    MiqWorker.find_all_stopping.to_a
   end
 
   def monitor_workers
@@ -13,7 +30,7 @@ class MiqServer::WorkerManagement::Process < MiqServer::WorkerManagement
 
   def monitor_active_workers
     # Monitor all remaining current worker records
-    miq_workers.where(:status => MiqWorker::STATUSES_CURRENT_OR_STARTING).each do |worker|
+    miq_workers.find_current_or_starting.each do |worker|
       # Push the heartbeat into the database
       persist_last_heartbeat(worker)
       # Check the worker record for heartbeat timeouts
@@ -32,19 +49,20 @@ class MiqServer::WorkerManagement::Process < MiqServer::WorkerManagement
     super
   end
 
-  def check_not_responding
-    worker_deleted = false
-    miq_workers.each do |w|
-      next unless monitor_reason_not_responding?(w)
-      next unless worker_get_monitor_status(w.pid) == :waiting_for_stop
+  def workers_quiesced?
+    check_not_responding
+    super
+  end
 
-      worker_not_responding(w)
-      worker_delete(w.pid)
-      w.destroy
-      worker_deleted = true
+  def check_not_responding
+    workers_to_check = miq_workers.select do |w|
+      monitor_reason_not_responding?(w) &&
+        worker_get_monitor_status(w.pid) == :waiting_for_stop
     end
 
-    miq_workers.reload if worker_deleted
+    remove_workers(workers_to_check) do |w|
+      worker_not_responding(w)
+    end
   end
 
   def validate_worker(worker)
@@ -65,5 +83,19 @@ class MiqServer::WorkerManagement::Process < MiqServer::WorkerManagement
 
   private
 
-  attr_accessor :miq_processes
+  attr_accessor :miq_processes, :miq_processes_by_pid
+
+  def sync_starting_non_rails_workers
+    starting = MiqWorker.find_all_starting
+    starting.where(:pid => miq_processes_by_pid.keys)
+            .reject(&:rails_worker?)
+            .each { |w| w.update!(:status => MiqWorker::STATUS_STARTED) }
+  end
+
+  def sync_stopping_non_rails_workers
+    stopping = MiqWorker.find_all_stopping
+    stopping.where(:pid => miq_processes_by_pid.keys)
+            .reject(&:rails_worker?)
+            .each { |w| w.update!(:status => MiqWorker::STATUS_STOPPED) }
+  end
 end

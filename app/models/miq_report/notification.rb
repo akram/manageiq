@@ -1,10 +1,9 @@
 module MiqReport::Notification
   def notify_user_of_report(run_on, result, options)
     userid = options[:userid]
-    url = options[:email_url_prefix]
 
     user = User.lookup_by_userid(userid)
-    from = options[:email] && !options[:email][:from].blank? ? options[:email][:from] : ::Settings.smtp.from
+    from = options[:email] && options[:email][:from].present? ? options[:email][:from] : ::Settings.smtp.from
     to   = options[:email] ? options[:email][:to] : user.try(:email)
 
     msg = nil
@@ -18,27 +17,27 @@ module MiqReport::Notification
 
     send_if_empty = options.fetch_path(:email, :send_if_empty)
     send_if_empty = true if send_if_empty.nil?
-    if !self.table_has_records? && !send_if_empty
+    if !table_has_records? && !send_if_empty
       _log.info("No records found for scheduled report and :send_if_empty option is false, no Email will be sent. ")
       return
     end
 
     _log.info("Emailing to: #{to.inspect} report results: [#{result.name}]")
 
-    body = notify_email_body(url, result, to)
+    body = notify_email_body(to)
     subject = run_on.strftime("Your report '#{title}' generated on %m/%d/%Y is ready")
 
     curr_tz = Time.zone # Save current time zone setting
     Time.zone = user ? user.get_timezone : MiqServer.my_server.server_timezone
 
-    if self.table_has_records?
+    if table_has_records?
       attach_types = options.fetch_path(:email, :attach) || [:pdf] # support legacy schedules
       attachments = attach_types.collect do |atype|
         target = atype == :pdf ? result : self
         {
           :content_type => "application/#{atype}",
           :filename     => "#{title} #{run_on.utc.iso8601}.#{atype}",
-          :body         => target.send("to_#{atype}")
+          :body         => target.send(:"to_#{atype}")
         }
       end
     end
@@ -59,8 +58,8 @@ module MiqReport::Notification
     Time.zone = curr_tz # Restore original time zone setting
   end
 
-  def notify_email_body(_url, _result, recipients)
-    if self.table_has_records?
+  def notify_email_body(recipients)
+    if table_has_records?
       _("Please find attached scheduled report \"%{name}\". This report was sent to: %{recipients}.") %
         {:name => name, :recipients => recipients.join(", ")}
     else

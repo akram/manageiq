@@ -1,10 +1,17 @@
 RSpec.describe MiqUiWorker do
+  describe ".worker_settings" do
+    it "count defaults to 2" do
+      EvmSpecHelper.local_miq_server
+      expect(described_class.worker_settings[:count]).to eq 2
+    end
+  end
+
   context ".all_ports_in_use" do
+    let(:zone) { server1.zone }
+    let(:server1) { EvmSpecHelper.local_miq_server }
     before do
       require 'util/miq-process'
       allow(MiqProcess).to receive(:is_worker?).and_return(false)
-
-      _guid, server1, @zone = EvmSpecHelper.create_guid_miq_server_zone
 
       @worker1 = FactoryBot.create(:miq_ui_worker, :miq_server => server1, :uri => "http://0.0.0.0:3000", :status => 'started')
       @worker2 = FactoryBot.create(:miq_ui_worker, :miq_server => server1, :uri => "http://0.0.0.0:3001", :status => 'started')
@@ -20,7 +27,7 @@ RSpec.describe MiqUiWorker do
     end
 
     it "current vs. remote servers" do
-      server2 = FactoryBot.create(:miq_server, :zone => @zone)
+      server2 = FactoryBot.create(:miq_server, :zone => zone)
       @worker2.miq_server = server2
       @worker2.save
       expect(MiqUiWorker.all_ports_in_use).to eq([3000])
@@ -46,7 +53,6 @@ RSpec.describe MiqUiWorker do
 
   it "#preload_for_worker_role autoloads api collection classes and descendants" do
     allow(EvmDatabase).to receive(:seeded_primordially?).and_return(true)
-    expect(MiqUiWorker).to receive(:configure_secret_token)
     MiqUiWorker.preload_for_worker_role
     expect(defined?(ServiceAnsibleTower)).to be_truthy
   end

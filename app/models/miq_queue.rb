@@ -25,15 +25,16 @@ class MiqQueue < ApplicationRecord
 
   MAX_PRIORITY    = 0
   HIGH_PRIORITY   = 20
+  MEDIUM_PRIORITY = 50
   NORMAL_PRIORITY = 100
   LOW_PRIORITY    = 150
   MIN_PRIORITY    = 200
 
-  PRIORITY_WHICH  = [:max, :high, :normal, :low, :min]
+  PRIORITY_WHICH  = [:max, :high, :medium, :normal, :low, :min]
   PRIORITY_DIR    = [:higher, :lower]
 
   def self.messaging_type
-    ENV["MESSAGING_TYPE"] || Settings.prototype.messaging_type
+    ENV.fetch("MESSAGING_TYPE", nil) || Settings.messaging.type
   end
 
   def self.messaging_client(client_ref)
@@ -55,6 +56,13 @@ class MiqQueue < ApplicationRecord
       _log.warn("Failed to open messaging client: #{err}")
       nil
     end
+  end
+
+  def self.messaging_client_options
+    opts = messaging_options_from_env || messaging_options_from_file
+    return if opts.nil?
+
+    opts.transform_values! { |v| v.kind_of?(String) ? ManageIQ::Password.try_decrypt(v) : v }
   end
 
   def self.columns_for_requeue
@@ -95,10 +103,10 @@ class MiqQueue < ApplicationRecord
 
   TIMEOUT = 10.minutes
 
-  serialize :args, Array
-  serialize :miq_callback, Hash
+  serialize :args, :type => Array
+  serialize :miq_callback, :type => Hash
 
-  validates :zone, :inclusion => {:in => proc { Zone.in_my_region.pluck(:name) }}, :allow_nil => true
+  validate :validate_zone_name
 
   STATE_READY   = 'ready'.freeze
   STATE_DEQUEUE = 'dequeue'.freeze
@@ -129,10 +137,10 @@ class MiqQueue < ApplicationRecord
       :zone         => Zone.determine_queue_zone(options),
       :state        => STATE_READY,
       :handler_type => nil,
-      :handler_id   => nil,
+      :handler_id   => nil
     )
 
-    if options[:zone].present? && options[:zone] == Zone.maintenance_zone&.name
+    if Zone.maintenance?(options[:zone])
       _log.debug("MiqQueue#put skipped: #{options.inspect}")
       return
     end
@@ -224,7 +232,7 @@ class MiqQueue < ApplicationRecord
     when "notifier"
       options[:role] = service
     when "reporting"
-      options[:queue_name] = "generic"
+      options[:queue_name] = queue_name_for_priority_service(service, options[:priority])
       options[:role] = service
     when "smartproxy"
       options[:queue_name] = "smartproxy"
@@ -237,6 +245,23 @@ class MiqQueue < ApplicationRecord
     # Note, options[:zone] is set in 'put' via 'determine_queue_zone' and handles setting
     # a nil (any) zone for regional roles.  Therefore, regional roles don't need to set zone here.
     put(options)
+  end
+
+  # For services with a dedicated queue_name and worker, such as reporting, high priority work is
+  # run in the 'generic' queue with HIGH_PRIORITY so priority workers or even generic workers can
+  # pick it up immediately. Anything but high priority work or higher is run in the service's
+  # queue, such as 'reporting', and the dedicated worker will process this message following
+  # priority processing.
+  #
+  # Why? For example, with 'reporting', reports are often started by a user who is actively waiting
+  # for the result so we need a way to expedite their request in workers who deal with high
+  # priority work.  At the same time, if a user isn't actively waiting for a report, it should be
+  # handled by reporting workers and not sit behind other items in the generic queue as it's far
+  # easier to scale these workers up and down as needed.
+  #
+  # TODO: Review if other services in submit_job, such as event/smart proxy should follow this pattern.
+  def self.queue_name_for_priority_service(service, priority)
+    (priority.nil? || MiqQueue.lower_priority?(priority, HIGH_PRIORITY)) ? service.to_s : "generic"
   end
 
   def self.where_queue_name(is_array)
@@ -478,6 +503,14 @@ class MiqQueue < ApplicationRecord
     return status, message, result
   end
 
+  # @return status
+  def deliver_and_process(requester = nil, &block)
+    status, message, result = deliver(requester, &block)
+    delivered(status, message, result) unless status == STATUS_RETRY
+
+    status
+  end
+
   def dispatch_method(obj, args)
     Timeout.timeout(msg_timeout) do
       args = activate_miq_task(args)
@@ -493,7 +526,7 @@ class MiqQueue < ApplicationRecord
   def delivered(state, msg, result)
     self.state = state
     _log.info("#{MiqQueue.format_short_log_msg(self)}, State: [#{state}], Delivered in [#{Time.now - delivered_on}] seconds")
-    m_callback(msg, result) unless miq_callback.blank?
+    m_callback(msg, result) if miq_callback.present?
   rescue => err
     _log.error("#{MiqQueue.format_short_log_msg(self)}, #{err.message}")
   ensure
@@ -571,22 +604,22 @@ class MiqQueue < ApplicationRecord
     data = msg.data.nil? ? "" : "#{msg.data.length} bytes"
     args = ManageIQ::Password.sanitize_string(msg.args.inspect)
 
-    "Message id: [#{msg.id}], "                         \
-    "Zone: [#{msg.zone}], "                             \
-    "Role: [#{msg.role}], "                             \
-    "Server: [#{msg.server_guid}], "                    \
-    "MiqTask id: [#{msg.miq_task_id}], "                \
-    "Handler id: [#{handler}], "                        \
-    "Ident: [#{msg.queue_name}], "                      \
-    "Target id: [#{msg.target_id}], "                   \
-    "Instance id: [#{msg.instance_id}], "               \
-    "Task id: [#{msg.task_id}], "                       \
+    "Message id: [#{msg.id}], " \
+    "Zone: [#{msg.zone}], " \
+    "Role: [#{msg.role}], " \
+    "Server: [#{msg.server_guid}], " \
+    "MiqTask id: [#{msg.miq_task_id}], " \
+    "Handler id: [#{handler}], " \
+    "Ident: [#{msg.queue_name}], " \
+    "Target id: [#{msg.target_id}], " \
+    "Instance id: [#{msg.instance_id}], " \
+    "Task id: [#{msg.task_id}], " \
     "Command: [#{msg.class_name}.#{msg.method_name}], " \
-    "Timeout: [#{msg.msg_timeout}], "                   \
-    "Priority: [#{msg.priority}], "                     \
-    "State: [#{msg.state}], "                           \
-    "Deliver On: [#{msg.deliver_on}], "                 \
-    "Data: [#{data}], "                                 \
+    "Timeout: [#{msg.msg_timeout}], " \
+    "Priority: [#{msg.priority}], " \
+    "State: [#{msg.state}], " \
+    "Deliver On: [#{msg.deliver_on}], " \
+    "Data: [#{data}], " \
     "Args: #{args}"
   end
 
@@ -608,6 +641,16 @@ class MiqQueue < ApplicationRecord
 
   private
 
+  # NOTE: this will intentionally lookup missing zones every time
+  def validate_zone_name
+    if zone && !self.class.valid_zone_names[zone]
+      found = self.class.valid_zone_names[zone] = Zone.in_my_region.exists?(:name => zone)
+      errors.add(:zone, N_("Unknown Zone")) unless found
+    end
+  end
+
+  cache_with_timeout(:valid_zone_names, 1.minute) { {} }
+
   def activate_miq_task(args)
     MiqTask.update_status(miq_task_id, MiqTask::STATE_ACTIVE, MiqTask::STATUS_OK, "Task starting") if miq_task_id
     params = args.first
@@ -624,7 +667,7 @@ class MiqQueue < ApplicationRecord
     )
 
     if result[:class_name].kind_of?(Class)
-      ActiveSupport::Deprecation.warn("Rails 5.1 dropped support for Class query values, use a String for class_name.", caller[1..-1])
+      Vmdb::Deprecation.warn("Rails 5.1 dropped support for Class query values, use a String for class_name.", caller[1..-1])
       result[:class_name] = result[:class_name].name
     end
     result
@@ -649,41 +692,32 @@ class MiqQueue < ApplicationRecord
 
   private_class_method :optional_values
 
-  def self.messaging_client_options
-    opts = messaging_options_from_env || messaging_options_from_file
-    return if opts.nil?
-
-    opts.transform_values! { |v| v.kind_of?(String) ? ManageIQ::Password.try_decrypt(v) : v }
-    opts.merge(:encoding => "json", :protocol => messaging_protocol)
-  end
-  private_class_method :messaging_client_options
-
-  def self.messaging_protocol
-    case messaging_type
-    when "artemis"
-      :Stomp
-    when "kafka"
-      :Kafka
-    end
-  end
-  private_class_method :messaging_protocol
-
   private_class_method def self.messaging_options_from_env
     return unless ENV["MESSAGING_HOSTNAME"] && ENV["MESSAGING_PORT"] && ENV["MESSAGING_USERNAME"] && ENV["MESSAGING_PASSWORD"]
 
-    {
-      :host     => ENV["MESSAGING_HOSTNAME"],
-      :port     => ENV["MESSAGING_PORT"].to_i,
-      :username => ENV["MESSAGING_USERNAME"],
-      :password => ENV["MESSAGING_PASSWORD"],
+    options = {
+      :host           => ENV["MESSAGING_HOSTNAME"],
+      :port           => ENV["MESSAGING_PORT"].to_i,
+      :username       => ENV["MESSAGING_USERNAME"],
+      :password       => ENV["MESSAGING_PASSWORD"],
+      :protocol       => ENV.fetch("MESSAGING_PROTOCOL", "Kafka"),
+      :encoding       => ENV.fetch("MESSAGING_ENCODING", "json"),
+      :sasl_mechanism => ENV.fetch("MESSAGING_SASL_MECHANISM", "PLAIN")
     }
+
+    if ENV["MESSAGING_SSL_CA"].present?
+      options[:ssl] = true
+      options[:ca_file] = ENV["MESSAGING_SSL_CA"]
+    end
+
+    options
   end
 
-  MESSAGING_CONFIG_FILE = Rails.root.join("config", "messaging.yml")
+  MESSAGING_CONFIG_FILE = Rails.root.join("config/messaging.yml")
   private_class_method def self.messaging_options_from_file
     return unless MESSAGING_CONFIG_FILE.file?
 
-    YAML.load_file(MESSAGING_CONFIG_FILE)[Rails.env].symbolize_keys.tap { |h| h[:host] = h.delete(:hostname) }
+    YAML.load_file(MESSAGING_CONFIG_FILE)[Rails.env].symbolize_keys
   end
 
   def destroy_potentially_stale_record

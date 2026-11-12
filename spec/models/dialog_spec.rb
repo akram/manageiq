@@ -130,6 +130,18 @@ RSpec.describe Dialog do
       expect(dialog.destroy).to be_truthy
       expect(Dialog.count).to eq(0)
     end
+
+    # had an issue around dialog_field thinking read_only meant seeded.
+    it "does destroy dialog with only a field" do
+      dialog_group = FactoryBot.create(:dialog_group)
+      dialog_field = FactoryBot.create(:dialog_field, :read_only => true)
+      dialog_tab   = FactoryBot.create(:dialog_tab)
+      dialog_group.dialog_fields << dialog_field
+      dialog_tab.dialog_groups << dialog_group
+      dialog.dialog_tabs << dialog_tab
+      dialog.destroy
+      expect(dialog).to be_deleted
+    end
   end
 
   describe "dialog structures" do
@@ -303,15 +315,15 @@ RSpec.describe Dialog do
           'id'            => dialog_tab.first.id,
           'label'         => 'updated_label',
           'dialog_groups' => [
-            { 'id'            => dialog_group.first.id,
+            {'id'            => dialog_group.first.id,
               'dialog_tab_id' => dialog_tab.first.id,
               'dialog_fields' =>
                                  [{
                                    'id'                      => dialog_field.first.id,
                                    'name'                    => dialog_field.first.name,
                                    'dialog_group_id'         => dialog_group.first.id,
-                                   'dialog_field_responders' => %w(dialog_field2)
-                                 }] },
+                                   'dialog_field_responders' => %w[dialog_field2]
+                                 }]},
             {
               'label'         => 'group 2',
               'dialog_fields' => [{
@@ -360,7 +372,7 @@ RSpec.describe Dialog do
         [
           'id'            => dialog_tab.first.id,
           'dialog_groups' => [
-            { 'id' => dialog_group.first.id, 'dialog_fields' => [{ 'id' => dialog_field.first.id }] }
+            {'id' => dialog_group.first.id, 'dialog_fields' => [{'id' => dialog_field.first.id}]}
           ]
         ]
       end

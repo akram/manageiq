@@ -5,7 +5,6 @@ RSpec.describe MiqServer do
 
   context ".seed" do
     before do
-      MiqRegion.seed
       Zone.seed
     end
 
@@ -52,7 +51,7 @@ RSpec.describe MiqServer do
 
   context "instance" do
     before do
-      @guid, @miq_server, @zone = EvmSpecHelper.create_guid_miq_server_zone
+      @miq_server = EvmSpecHelper.local_miq_server
     end
 
     describe "#monitor_myself" do
@@ -79,16 +78,7 @@ RSpec.describe MiqServer do
       end
     end
 
-    it "should have proper guid" do
-      expect(@miq_server.guid).to eq(@guid)
-    end
-
-    it "should have default zone" do
-      expect(@miq_server.zone.name).to eq(@zone.name)
-    end
-
     it "cannot assign to maintenance zone" do
-      MiqRegion.seed
       Zone.seed
 
       @miq_server.zone = Zone.maintenance_zone
@@ -96,10 +86,18 @@ RSpec.describe MiqServer do
       expect(@miq_server.errors.messages[:zone]).to be_present
     end
 
-    it "shutdown will raise an event and quiesce" do
-      expect(MiqEvent).to receive(:raise_evm_event)
-      expect(@miq_server).to receive(:quiesce)
-      @miq_server.shutdown
+    context "#shutdown" do
+      it "will quiesce and raise an event" do
+        expect(MiqEvent).to receive(:raise_evm_event)
+        expect(@miq_server).to receive(:quiesce)
+        @miq_server.shutdown
+      end
+
+      it "exceptions during raise event will not prevent quiesce and will be ignored" do
+        allow(MiqEvent).to receive(:raise_evm_event).and_raise(StandardError)
+        expect(@miq_server).to receive(:quiesce)
+        @miq_server.shutdown
+      end
     end
 
     it "sync stop will do nothing if stopped" do
@@ -210,7 +208,6 @@ RSpec.describe MiqServer do
       end
 
       it "quiesce_workers do mini-monitor_workers loop" do
-        expect(@miq_server).to receive(:heartbeat)
         expect(@miq_server.worker_manager).to receive(:quiesce_workers_loop_timeout?).never
         @worker.update(:status => MiqWorker::STATUS_STOPPED)
         @miq_server.worker_manager.workers_quiesced?
@@ -334,8 +331,8 @@ RSpec.describe MiqServer do
 
   describe "#zone_description" do
     it "delegates to zone" do
-      _, miq_server, zone = EvmSpecHelper.create_guid_miq_server_zone
-      expect(miq_server.zone_description).to eq(zone.description)
+      miq_server = EvmSpecHelper.local_miq_server
+      expect(miq_server.zone_description).to eq(miq_server.zone.description)
     end
   end
 
@@ -407,17 +404,99 @@ RSpec.describe MiqServer do
     end
   end
 
-  context ".managed_resources" do
-    before { MiqRegion.seed }
-
+  context ".audit_details" do
     let(:ems) { FactoryBot.create(:ems_infra) }
     let!(:active_vm) { FactoryBot.create(:vm_infra, :ext_management_system => ems) }
     let!(:archived_vm) { FactoryBot.create(:vm_infra) }
     let!(:active_host) { FactoryBot.create(:host, :ext_management_system => ems) }
     let!(:archived_host) { FactoryBot.create(:host) }
+    let!(:active_service) { FactoryBot.create(:service, :lifecycle_state => "provisioned", :retired => false) }
+    let!(:inactive_service) { FactoryBot.create(:service, :retired => true) }
+    let!(:active_service_template) { FactoryBot.create(:service_template) }
+    let!(:archived_service_template) { FactoryBot.create(:service_template, :deleted_on => Time.now.utc) }
 
-    it "with active and archived vms and hosts" do
-      expect(described_class.managed_resources).to include(:vms => 1, :hosts => 1)
+    it "with active and archived resources" do
+      expect(described_class.audit_details).to include(:vms => 1, :hosts => 1, :services => {:active => 1, :inactive => 1}, :service_catalog_items => {:active => 1, :archived => 1})
+    end
+  end
+
+  describe "#messaging_health_check" do
+    let(:broker)     { double("broker") }
+    let(:miq_server) { FactoryBot.create(:miq_server) }
+
+    context "when broker is nil" do
+      before { allow(MiqQueue).to receive(:messaging_client).with("health_check").and_return(nil) }
+
+      it "returns early without error" do
+        expect(miq_server).not_to receive(:shutdown_and_exit)
+        expect { miq_server.send(:messaging_health_check) }.not_to raise_error
+      end
+    end
+
+    context "when broker is available" do
+      before do
+        allow(MiqQueue).to receive(:messaging_client).with("health_check").and_return(broker)
+      end
+
+      it "succeeds on first attempt and closes broker" do
+        expect(broker).to receive(:topics).once
+        expect(broker).to receive(:close).once
+        expect(miq_server).not_to receive(:shutdown_and_exit)
+
+        miq_server.send(:messaging_health_check)
+      end
+
+      it "retries on failure and succeeds on second attempt" do
+        call_count = 0
+        allow(broker).to receive(:topics) do
+          call_count += 1
+          raise "Connection error" if call_count == 1
+        end
+
+        expect(broker).to receive(:close).once
+        expect(miq_server).not_to receive(:shutdown_and_exit)
+        expect(miq_server).to receive(:sleep).with(2).once
+
+        miq_server.send(:messaging_health_check)
+      end
+
+      it "retries on failure and succeeds on third attempt" do
+        call_count = 0
+        allow(broker).to receive(:topics) do
+          call_count += 1
+          raise "connection error" if call_count < 3
+        end
+        expect(broker).to receive(:close).once
+        expect(miq_server).not_to receive(:shutdown_and_exit)
+        expect(miq_server).to receive(:sleep).with(2).twice
+
+        miq_server.send(:messaging_health_check)
+      end
+
+      it "shuts down after max retry attempts" do
+        allow(broker).to receive(:topics).and_raise("Connection error")
+        expect(broker).to receive(:close).once
+        expect(miq_server).to receive(:shutdown_and_exit).with(1)
+        expect(miq_server).to receive(:sleep).with(2).twice
+
+        miq_server.send(:messaging_health_check)
+      end
+
+      it "ignores errors when closing broker" do
+        allow(broker).to receive(:topics)
+        allow(broker).to receive(:close).and_raise("Close error")
+
+        expect { miq_server.send(:messaging_health_check) }.not_to raise_error
+      end
+
+      it "closes broker even when topics raises error" do
+        allow(broker).to receive(:topics).and_raise("Connection error")
+        expect(broker).to receive(:close).once
+        allow(miq_server).to receive(:shutdown_and_exit)
+        allow(miq_server).to receive(:sleep)
+
+        miq_server.send(:messaging_health_check)
+      end
     end
   end
 end

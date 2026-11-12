@@ -1,3 +1,4 @@
+# NOTE: Does not implement any search functionality. Implements ActAsArModel to be useable for reports
 class Chargeback < ActsAsArModel
   set_columns_hash( # Fields common to any chargeback type
     :start_date             => :datetime,
@@ -10,7 +11,7 @@ class Chargeback < ActsAsArModel
     :entity                 => :binary,
     :tag_name               => :string,
     :label_name             => :string,
-    :fixed_compute_metric   => :integer,
+    :fixed_compute_metric   => :integer
   )
 
   ALLOWED_FIELD_SUFFIXES = %w[
@@ -35,6 +36,7 @@ class Chargeback < ActsAsArModel
       begin
         ChargeableField.all.each_with_object({}) do |chargeable_field, result|
           next unless report_col_options.keys.include?("#{chargeable_field.rate_name}_cost")
+
           result["#{chargeable_field.rate_name}_rate"] = :string
         end
       end
@@ -101,6 +103,8 @@ class Chargeback < ActsAsArModel
       [{:key => "#{tenant ? tenant.id : 'none'}_#{ts_key}"}]
     elsif @options.group_by_date_only?
       [{:key => ts_key.to_s}]
+    elsif @options.group_by_date_first?
+      [{:key => "#{ts_key}_#{consumption.resource_id}"}]
     else
       [{:key => default_key(consumption, ts_key)}]
     end
@@ -121,7 +125,7 @@ class Chargeback < ActsAsArModel
       self.tag_name = result_key[:key_object] ? result_key[:key_object].description : _('<Empty>')
     elsif @options[:groupby_label].present?
       label_value = self.class.groupby_label_value(consumption, options[:groupby_label])
-      self.label_name = label_value.present? ? label_value : _('<Empty>')
+      self.label_name = (label_value.presence || _('<Empty>'))
     else
       init_extra_fields(consumption, region)
     end
@@ -166,8 +170,8 @@ class Chargeback < ActsAsArModel
       duration = @options.interval == "monthly" ? 30.days : @options.duration_of_report_step
       results = plan.calculate_list_of_costs_input(resource_type:  showback_category,
                                                    data:           data,
-                                                   start_time:     consumption.instance_variable_get("@start_time"),
-                                                   end_time:       consumption.instance_variable_get("@end_time"),
+                                                   start_time:     consumption.instance_variable_get(:@start_time),
+                                                   end_time:       consumption.instance_variable_get(:@end_time),
                                                    cycle_duration: duration)
 
       results.each do |cost_value, sb_rate|
@@ -213,6 +217,7 @@ class Chargeback < ActsAsArModel
         end
         r.charge(consumption, @options).each do |field, value|
           next if @options.skip_field_accumulation?(field, self[field])
+
           _log.debug("Calculation with field: #{field} and with value: #{value}")
           (self[field] = self[field].kind_of?(Numeric) ? (self[field] || 0) + value : value)
           _log.debug("Accumulated value: #{self[field]}")
@@ -238,22 +243,27 @@ class Chargeback < ActsAsArModel
   end
 
   def self.set_chargeback_report_options(rpt, group_by, header_for_tag, groupby_label, tz)
-    rpt.cols = %w(start_date display_range)
-
-    static_cols       = report_static_cols
-    static_cols      -= ["image_name"] if group_by == "project"
-    static_cols      -= ["vm_name"] if group_by == "date-only"
-    static_cols       = group_by == "tag" ? [report_tag_field] : static_cols
-    static_cols       = group_by == "label" ? [report_label_field] : static_cols
-    static_cols       = group_by == "tenant" ? ['tenant_name'] : static_cols
-    rpt.cols         += static_cols
-    rpt.col_order     = static_cols + ["display_range"]
-    rpt.sortby        = static_cols + ["start_date"]
+    static_cols = case group_by
+                  when "project"   then ["project_name"]
+                  when "date-only" then []
+                  when "tag"       then [report_tag_field]
+                  when "label"     then [report_label_field]
+                  when "tenant"    then ["tenant_name"]
+                  else                  report_static_cols
+                  end
+    rpt.cols = %w[start_date display_range] + static_cols
+    if group_by == "date-first"
+      rpt.col_order = ["display_range"] + static_cols
+      rpt.sortby    = (["start_date"] + static_cols)
+    else
+      rpt.col_order = static_cols + ["display_range"]
+      rpt.sortby    = (static_cols + ["start_date"])
+    end
 
     rpt.col_order.each do |c|
-      header_column = if (c == report_tag_field && header_for_tag)
+      header_column = if c == report_tag_field && header_for_tag
                         header_for_tag
-                      elsif (c == report_label_field && groupby_label)
+                      elsif c == report_label_field && groupby_label
                         groupby_label
                       else
                         c
@@ -274,7 +284,7 @@ class Chargeback < ActsAsArModel
   end
 
   def self.load_custom_attributes_for(cols)
-    chargeback_klass = report_cb_model(self.to_s).safe_constantize
+    chargeback_klass = report_cb_model(to_s).safe_constantize
     chargeback_klass.load_custom_attributes_for(cols)
     cols.each do |x|
       next unless x.include?(CustomAttributeMixin::CUSTOM_ATTRIBUTES_PREFIX)

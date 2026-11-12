@@ -2,18 +2,19 @@ module ArRegion
   extend ActiveSupport::Concern
 
   included do
-    cache_with_timeout(:id_to_miq_region) { Hash.new }
+    cache_with_timeout(:id_to_miq_region) { {} }
   end
 
   module ClassMethods
     def inherited(other)
+      super
+
       if other == other.base_class
         other.class_eval do
           virtual_column :region_number,      :type => :integer # This method is defined in ActiveRecord::IdRegions
           virtual_column :region_description, :type => :string
         end
       end
-      super
     end
   end
 

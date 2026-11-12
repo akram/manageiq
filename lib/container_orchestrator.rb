@@ -1,9 +1,8 @@
 autoload(:Kubeclient, 'kubeclient')
-autoload(:KubeException, 'kubeclient')
 
 class ContainerOrchestrator
   include Vmdb::Logging
-  include_concern 'ObjectDefinition'
+  include ObjectDefinition
 
   TOKEN_FILE   = "/run/secrets/kubernetes.io/serviceaccount/token".freeze
   CA_CERT_FILE = "/run/secrets/kubernetes.io/serviceaccount/ca.crt".freeze
@@ -25,44 +24,44 @@ class ContainerOrchestrator
     definition = deployment_definition(name)
     yield(definition) if block_given?
     kube_apps_connection.create_deployment(definition)
-  rescue KubeException => e
-    raise unless e.message =~ /already exists/
+  rescue Kubeclient::HttpError => e
+    raise unless /already exists/.match?(e.message)
   end
 
   def create_service(name, selector, port)
     definition = service_definition(name, selector, port)
     yield(definition) if block_given?
     kube_connection.create_service(definition)
-  rescue KubeException => e
-    raise unless e.message =~ /already exists/
+  rescue Kubeclient::HttpError => e
+    raise unless /already exists/.match?(e.message)
   end
 
   def create_secret(name, data)
     definition = secret_definition(name, data)
     yield(definition) if block_given?
     kube_connection.create_secret(definition)
-  rescue KubeException => e
-    raise unless e.message =~ /already exists/
+  rescue Kubeclient::HttpError => e
+    raise unless /already exists/.match?(e.message)
   end
 
   def delete_deployment(name)
     _log.info("Deleting [#{name}] in namespace: #{my_namespace}")
     scale(name, 0)
     kube_apps_connection.delete_deployment(name, my_namespace)
-  rescue KubeException => e
-    raise unless e.message =~ /not found/
+  rescue Kubeclient::HttpError => e
+    raise unless /not found/.match?(e.message)
   end
 
   def delete_service(name)
     kube_connection.delete_service(name, my_namespace)
-  rescue KubeException => e
-    raise unless e.message =~ /not found/
+  rescue Kubeclient::HttpError => e
+    raise unless /not found/.match?(e.message)
   end
 
   def delete_secret(name)
     kube_connection.delete_secret(name, my_namespace)
-  rescue KubeException => e
-    raise unless e.message =~ /not found/
+  rescue Kubeclient::HttpError => e
+    raise unless /not found/.match?(e.message)
   end
 
   def get_deployments
@@ -95,6 +94,14 @@ class ContainerOrchestrator
     get_pod_by_namespace_and_hostname(my_namespace, ENV["HOSTNAME"])
   end
 
+  def my_node_affinity_arch_values
+    ContainerOrchestrator.new.my_pod.spec.affinity&.nodeAffinity&.requiredDuringSchedulingIgnoredDuringExecution&.nodeSelectorTerms&.each do |i|
+      i.matchExpressions&.each { |a| return(a.values) if a.key == "kubernetes.io/arch" }
+    end
+
+    ["amd64"]
+  end
+
   private
 
   def default_get_options
@@ -117,7 +124,7 @@ class ContainerOrchestrator
 
     Kubeclient::Client.new(
       uri,
-      :auth_options => { :bearer_token_file => TOKEN_FILE },
+      :auth_options => {:bearer_token_file => TOKEN_FILE},
       :ssl_options  => ssl_options
     )
   end

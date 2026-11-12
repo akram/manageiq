@@ -1,5 +1,5 @@
 class EmsEvent < EventStream
-  include_concern 'Automate'
+  include Automate
 
   CLONE_TASK_COMPLETE = "CloneVM_Task_Complete"
   SOURCE_DEST_TASKS = [
@@ -33,6 +33,62 @@ class EmsEvent < EventStream
     end
   end
 
+  def self.event_groups
+    @event_groups ||= begin
+      core_event_groups = ::Settings.event_handling.event_groups.to_hash
+      Settings.ems.each_with_object(core_event_groups) do |(_provider_type, provider_settings), event_groups|
+        provider_event_groups = provider_settings.fetch_path(:event_handling, :event_groups)
+        next unless provider_event_groups
+
+        DeepMerge.deep_merge!(
+          provider_event_groups.to_hash, event_groups,
+          :preserve_unmergeables => false,
+          :overwrite_arrays      => false
+        )
+      end
+    end
+  end
+
+  private_class_method def self.partition_group_and_level_by_event_type
+    return @literal_group_and_level_by_event_type, @regex_group_and_level_by_event_type if @literal_group_and_level_by_event_type
+
+    @literal_group_and_level_by_event_type = {}
+    @regex_group_and_level_by_event_type = {}
+
+    event_groups.each do |group_name, group_contents|
+      group_contents.each do |group_level, event_types|
+        next if group_level == :name
+
+        event_types.each do |event_type|
+          if event_type.starts_with?("/")
+            @regex_group_and_level_by_event_type[Regexp.new(event_type[1..-2])] ||= [group_name, group_level]
+          else
+            @literal_group_and_level_by_event_type[event_type] ||= [group_name, group_level]
+          end
+        end
+      end
+    end
+
+    return @literal_group_and_level_by_event_type, @regex_group_and_level_by_event_type
+  end
+
+  def self.clear_event_groups_cache
+    @event_groups = @literal_group_and_level_by_event_type = @regex_group_and_level_by_event_type = nil
+  end
+
+  def self.group_and_level(event_type)
+    by_literal, by_regex = partition_group_and_level_by_event_type
+    by_literal[event_type] ||
+      by_regex.detect { |regex, _| regex.match?(event_type) }&.last ||
+      [DEFAULT_GROUP_NAME, DEFAULT_GROUP_LEVEL]
+  end
+
+  def self.group_name(group)
+    return if group.nil?
+
+    event_groups.dig(group.to_sym, :name) || DEFAULT_GROUP_NAME_STR
+  end
+
   def handle_event
     EmsEventHelper.new(self).handle
   rescue => err
@@ -48,20 +104,20 @@ class EmsEvent < EventStream
   end
 
   def self.add_queue(meth, ems_id, event)
-    if MiqQueue.messaging_type == "miq_queue"
+    if MiqEventHandler.worker_settings[:dequeue_method] != "drb" && MiqQueue.messaging_client('event_handler').present?
+      MiqQueue.messaging_client('event_handler').publish_topic(
+        :service => "manageiq.#{MiqEventHandler.default_queue_name}",
+        :sender  => ems_id,
+        :event   => event[:event_type],
+        :payload => event
+      )
+    else
       MiqQueue.submit_job(
         :service     => "event",
         :target_id   => ems_id,
         :class_name  => "EmsEvent",
         :method_name => meth,
         :args        => [event]
-      )
-    else
-      MiqQueue.messaging_client('event_handler')&.publish_topic(
-        :service => "manageiq.#{MiqEventHandler.default_queue_name}",
-        :sender  => ems_id,
-        :event   => event[:event_type],
-        :payload => event
       )
     end
   end
@@ -78,9 +134,12 @@ class EmsEvent < EventStream
     process_availability_zone_in_event!(event_hash)
     process_cluster_in_event!(event_hash)
     process_container_entities_in_event!(event_hash)
+    process_physical_storage_in_event!(event_hash)
 
     # Write the event
     new_event = create_event(event_hash)
+    return if new_event.nil? # If the event is a duplicate skip further processing
+
     # Create a 'completed task' event if this is the last in a series of events
     create_completed_event(event_hash) if task_final_events.key?(event_type.to_sym)
 
@@ -136,6 +195,10 @@ class EmsEvent < EventStream
     end
   end
 
+  def self.process_physical_storage_in_event!(event, options = {})
+    process_object_in_event!(PhysicalStorage, event, options)
+  end
+
   def self.process_container_entities_in_event!(event, _options = {})
     [ContainerNode, ContainerGroup, ContainerReplicator].each do |entity|
       process_object_in_event!(entity, event)
@@ -149,7 +212,7 @@ class EmsEvent < EventStream
       if vm.respond_to?(:availability_zone)
         availability_zone = vm.availability_zone
         unless availability_zone.nil?
-          event[:availability_zone_id]     = availability_zone.id
+          event[:availability_zone_id] = availability_zone.id
         end
       end
     end
@@ -165,6 +228,7 @@ class EmsEvent < EventStream
 
   def self.first_chained_event(ems_id, chain_id)
     return nil if chain_id.nil?
+
     EmsEvent.where(:ems_id => ems_id, :chain_id => chain_id).order(:id).first
   end
 
@@ -218,7 +282,7 @@ class EmsEvent < EventStream
   private
 
   def self.event_allowed_ems_ref_keys
-    %w(vm_ems_ref dest_vm_ems_ref)
+    %w[vm_ems_ref dest_vm_ems_ref]
   end
   private_class_method :event_allowed_ems_ref_keys
 
@@ -230,7 +294,7 @@ class EmsEvent < EventStream
       :timestamp   => event[:timestamp],
       :chain_id    => event[:chain_id],
       :ems_id      => event[:ems_id],
-      :ems_ref     => event[:ems_ref],
+      :ems_ref     => event[:ems_ref]
     )
     new_event.handle_event if new_event
     new_event
@@ -275,7 +339,7 @@ class EmsEvent < EventStream
         :vm_ems_ref        => source_event.vm_ems_ref,
         :vm_or_template_id => source_event.vm_or_template_id
       }
-      new_event[:username] = event.username unless event.username.blank?
+      new_event[:username] = event.username if event.username.present?
 
       # Fill in the dest information if we have it
       unless dest_event.nil?
@@ -285,10 +349,10 @@ class EmsEvent < EventStream
         new_event.merge!(
           :dest_host_name         => dest_event.host_name,
           :dest_host_id           => dest_event.host_id,
-          :dest_vm_name           => dest_event.send("#{dest_key}vm_name"),
-          :dest_vm_location       => dest_event.send("#{dest_key}vm_location"),
-          :dest_vm_ems_ref        => dest_event.send("#{dest_key}vm_ems_ref"),
-          :dest_vm_or_template_id => dest_event.send("#{dest_key}vm_or_template_id")
+          :dest_vm_name           => dest_event.send(:"#{dest_key}vm_name"),
+          :dest_vm_location       => dest_event.send(:"#{dest_key}vm_location"),
+          :dest_vm_ems_ref        => dest_event.send(:"#{dest_key}vm_ems_ref"),
+          :dest_vm_or_template_id => dest_event.send(:"#{dest_key}vm_or_template_id")
         )
       end
 
@@ -300,6 +364,7 @@ class EmsEvent < EventStream
 
   private_class_method def self.syndicate_event(ems_id, event)
     ems = ExtManagementSystem.find(ems_id)
+    event = event.dup
     event[:ems_uid]  = ems&.uid_ems
     event[:ems_type] = ems&.class&.ems_type
 

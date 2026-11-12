@@ -77,14 +77,14 @@ class ManageIQ::Providers::EmbeddedAnsible::AutomationManager::NetworkCredential
   end
 
   def self.params_to_attributes(params)
-    attrs = params.dup
+    attrs = super.dup
 
     attrs[:auth_key]          = attrs.delete(:ssh_key_data)       if attrs.key?(:ssh_key_data)
     attrs[:auth_key_password] = attrs.delete(:ssh_key_unlock)     if attrs.key?(:ssh_key_unlock)
     attrs[:become_password]   = attrs.delete(:authorize_password) if attrs.key?(:authorize_password)
 
     if attrs[:authorize]
-      attrs[:options] = { :authorize => attrs.delete(:authorize) }
+      attrs[:options] = {:authorize => attrs.delete(:authorize)}
     end
 
     attrs

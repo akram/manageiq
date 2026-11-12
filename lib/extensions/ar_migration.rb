@@ -25,16 +25,21 @@ module ArPglogicalMigrationHelper
 
     if direction == :up
       if version == SCHEMA_MIGRATIONS_RAN_MIGRATION
-        to_add = ActiveRecord::SchemaMigration.normalized_versions << version
+        to_add = ActiveRecord::Base.connection_pool.schema_migration.normalized_versions << version
       else
         to_add = [version]
       end
 
       to_add.each do |v|
-        ActiveRecord::Base.connection.exec_insert("INSERT INTO schema_migrations_ran (version, created_at) VALUES ($1, $2)", "SQL", [[nil, v], [nil, Time.now.utc.iso8601(6)]])
+        binds = [
+          ActiveRecord::Relation::QueryAttribute.new("version", v, ActiveModel::Type::String.new),
+          ActiveRecord::Relation::QueryAttribute.new("created_at", Time.now.utc.iso8601(6), ActiveModel::Type::Value.new)
+        ]
+        ActiveRecord::Base.connection.exec_insert("INSERT INTO schema_migrations_ran (version, created_at) VALUES ($1, $2)", "SQL", binds, nil, nil)
       end
     else
-      ActiveRecord::Base.connection.exec_delete("DELETE FROM schema_migrations_ran WHERE version = $1", "SQL", [[nil, version]])
+      binds = [ActiveRecord::Relation::QueryAttribute.new("version", version, ActiveModel::Type::String.new)]
+      ActiveRecord::Base.connection.exec_delete("DELETE FROM schema_migrations_ran WHERE version = $1", "SQL", binds)
     end
   end
 
@@ -72,6 +77,7 @@ module ArPglogicalMigrationHelper
 
     def wait_for_migration?
       return false unless schema_migrations_ran_class
+
       # We need to unscope here since in_region doesn't override the default scope of in_my_region
       # see https://github.com/ManageIQ/activerecord-id_regions/issues/11
       !schema_migrations_ran_class.unscoped.in_region(region_number).where(:version => version).exists?
@@ -82,13 +88,12 @@ module ArPglogicalMigrationHelper
     end
 
     def restart_subscription
-      c = SubscriptionHelper.establish_connection.connection.raw_connection
-      rep_client = PG::LogicalReplication::Client.new(c)
+      SubscriptionHelper.establish_connection.with_connection do |c|
+        rep_client = PG::LogicalReplication::Client.new(c.raw_connection)
 
-      rep_client.disable_subscription(subscription.id)
-      rep_client.enable_subscription(subscription.id)
-    ensure
-      SubscriptionHelper.remove_connection
+        rep_client.disable_subscription(subscription.id)
+        rep_client.enable_subscription(subscription.id)
+      end
     end
   end
 end

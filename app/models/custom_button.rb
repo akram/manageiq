@@ -6,7 +6,7 @@ class CustomButton < ApplicationRecord
     order(Arel.sql(order))
   }
 
-  serialize :options, Hash
+  serialize :options, :type => Hash
   serialize :visibility_expression
   serialize :enablement_expression
   serialize :visibility
@@ -55,6 +55,10 @@ class CustomButton < ApplicationRecord
     Tenant,
     User,
     Vm,
+    PhysicalChassis,
+    PhysicalServer,
+    PhysicalStorage,
+    PhysicalRack,
   ].freeze
 
   def self.buttons_for(other, applies_to_id = nil)
@@ -64,6 +68,7 @@ class CustomButton < ApplicationRecord
       applies_to_class = other
     else
       raise _("Instance has no id") if other.id.nil?
+
       applies_to_class = other.class.base_model.name
       applies_to_id    = other.id
     end
@@ -91,6 +96,7 @@ class CustomButton < ApplicationRecord
       self.applies_to_id    = nil
     else
       raise _("Instance has no id") if other.id.nil?
+
       self.applies_to_class = other.class.base_model.name
       self.applies_to_id    = other.id
     end
@@ -199,13 +205,15 @@ class CustomButton < ApplicationRecord
   def evaluate_enablement_expression_for(object)
     return true unless enablement_expression
     return false if enablement_expression && !object # list
-    enablement_expression.lenient_evaluate(object)
+
+    enablement_expression.evaluate(object)
   end
 
   def evaluate_visibility_expression_for(object)
     return true unless visibility_expression
     return false if visibility_expression && !object # object == nil, method is called for list of objects
-    visibility_expression.lenient_evaluate(object)
+
+    visibility_expression.evaluate(object)
   end
 
   # End - Helper methods to support moving automate columns to resource_actions table
@@ -221,18 +229,24 @@ class CustomButton < ApplicationRecord
 
   def visible_for_current_user?
     return false unless visibility.key?(:roles)
-    visibility[:roles].include?(User.current_user.miq_user_role_name) || visibility[:roles].include?("_ALL_")
+    return true if visibility[:roles].include?("_ALL_")
+
+    role_id = User.current_user.miq_user_role&.id
+    return false unless role_id
+
+    visibility[:roles].any? { |v| v.to_i == role_id }
   end
 
   def self.get_user(user)
     user = User.lookup_by_userid(user) if user.kind_of?(String)
     raise _("Unable to find user '%{user}'") % {:user => user} if user.nil?
+
     user
   end
 
   def copy(options = {})
     options[:guid] = SecureRandom.uuid
-    options.each_with_object(dup) { |(k, v), button| button.send("#{k}=", v) }.tap(&:save!)
+    options.each_with_object(dup) { |(k, v), button| button.send(:"#{k}=", v) }.tap(&:save!)
   end
 
   def self.display_name(number = 1)

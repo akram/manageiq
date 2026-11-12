@@ -2,13 +2,12 @@ class CloudVolume < ApplicationRecord
   include NewWithTypeStiMixin
   include ProviderObjectMixin
   include AsyncDeleteMixin
-  include AvailabilityMixin
   include SupportsFeatureMixin
   include CloudTenancyMixin
   include CustomActionsMixin
   include EmsRefreshMixin
-
-  include_concern 'Operations'
+  include Operations
+  include SupportsAttribute
 
   belongs_to :ext_management_system, :foreign_key => :ems_id, :class_name => "ExtManagementSystem"
   belongs_to :availability_zone
@@ -25,20 +24,8 @@ class CloudVolume < ApplicationRecord
   has_many   :volume_mappings, :dependent => :destroy
   has_many   :host_initiators, :through => :volume_mappings
 
-  supports_not :backup_create
-  supports_not :backup_restore
-  supports_not :create
-  supports_not :snapshot_create
-  supports_not :update
-
   delegate :queue_name_for_ems_operations, :to => :ext_management_system, :allow_nil => true
-
-  supports_not :safe_delete
-  virtual_column :supports_safe_delete, :type => :boolean
-
-  def supports_safe_delete
-    supports?(:safe_delete)
-  end
+  supports_attribute :feature => :safe_delete
 
   acts_as_miq_taggable
 
@@ -88,6 +75,7 @@ class CloudVolume < ApplicationRecord
 
   def self.create_volume(ems_id, options = {})
     raise ArgumentError, _("ems_id cannot be nil") if ems_id.nil?
+
     ext_management_system = ExtManagementSystem.find(ems_id)
     raise ArgumentError, _("ext_management_system cannot be found") if ext_management_system.nil?
 
@@ -188,5 +176,10 @@ class CloudVolume < ApplicationRecord
 
   def available_vms
     raise NotImplementedError, _("available_vms must be implemented in a subclass")
+  end
+
+  # TODO(kbrock): remove when this is moved from ui-classic to manageiq-api
+  def create_volume_snapshot_queue(userid, options = {})
+    ext_management_system.class_by_ems(:CloudVolumeSnapshot)&.create_snapshot_queue(userid, self, options)
   end
 end

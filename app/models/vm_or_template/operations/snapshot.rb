@@ -3,47 +3,41 @@ module VmOrTemplate::Operations::Snapshot
 
   included do
     supports :snapshot_create do
-      if supports?(:snapshots)
-        unless supports?(:control)
-          unsupported_reason_add(:snapshot_create, unsupported_reason(:control))
-        end
-      else
-        unsupported_reason_add(:snapshot_create, _("Operation not supported"))
-      end
+      unsupported_reason(:snapshots) || unsupported_reason(:control)
     end
+
+    supports_not :rename_snapshot
 
     supports :remove_snapshot do
-      if supports?(:snapshots)
-        if snapshots.size <= 0
-          unsupported_reason_add(:remove_snapshot, _("No snapshots available for this VM"))
-        end
-        unless supports?(:control)
-          unsupported_reason_add(:remove_snapshot, unsupported_reason(:control))
-        end
-      else
-        unsupported_reason_add(:remove_snapshot, _("Operation not supported"))
-      end
+      unsupported_reason(:snapshots) || unsupported_reason(:control) ||
+        (_("No snapshots available for this VM") if snapshots.size <= 0)
     end
 
-    supports :remove_all_snapshots do
-      unless supports?(:remove_snapshot)
-        unsupported_reason_add(:remove_all_snapshots, unsupported_reason(:remove_snapshot))
-      end
-    end
-
-    supports :remove_snapshot_by_description do
-      unless supports?(:remove_snapshot)
-        unsupported_reason_add(:remove_snapshot_by_description, unsupported_reason(:remove_snapshot))
-      end
-    end
-
-    supports :revert_to_snapshot do
-      unless supports?(:remove_snapshot)
-        unsupported_reason_add(:revert_to_snapshot, unsupported_reason(:remove_snapshot))
-      end
-    end
-
+    supports(:remove_all_snapshots)           { unsupported_reason(:remove_snapshot) }
+    supports(:remove_snapshot_by_description) { unsupported_reason(:remove_snapshot) }
+    supports(:revert_to_snapshot)             { unsupported_reason(:remove_snapshot) }
     supports_not :snapshots
+  end
+
+  def raw_rename_snapshot(_snapshot_id, _new_name)
+    raise NotImplementedError, _("must be implemented in a subclass")
+  end
+
+  def rename_snapshot(snapshot_id, new_name)
+    raw_rename_snapshot(snapshot_id, new_name)
+  end
+
+  def rename_snapshot_queue(snapshot_id, new_name, task_id = nil)
+    MiqQueue.put(
+      :class_name  => self.class.name,
+      :instance_id => id,
+      :method_name => 'rename_snapshot',
+      :args        => [snapshot_id, new_name],
+      :role        => 'ems_operations',
+      :queue_name  => queue_name_for_ems_operations,
+      :zone        => my_zone,
+      :task_id     => task_id
+    )
   end
 
   def raw_create_snapshot(_name, _desc = nil, _memory)

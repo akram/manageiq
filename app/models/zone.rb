@@ -2,9 +2,7 @@ class Zone < ApplicationRecord
   validates_presence_of   :name, :description
   validates :name, :unique_within_region => true
 
-  serialize :settings, Hash
-
-  belongs_to :log_file_depot, :class_name => "FileDepot"
+  serialize :settings, :type => Hash
 
   has_many :miq_servers
   has_many :ext_management_systems
@@ -12,7 +10,7 @@ class Zone < ApplicationRecord
   has_many :container_managers, :class_name => "ManageIQ::Providers::ContainerManager"
   has_many :miq_schedules, :dependent => :destroy
   has_many :providers
-  has_many :miq_queues, :dependent => :destroy, :foreign_key => :zone, :primary_key => :name
+  has_many :miq_queues, :dependent => :delete_all, :foreign_key => :zone, :primary_key => :name
 
   has_many :hosts,                 :through => :ext_management_systems
   has_many :clustered_hosts,       :through => :ext_management_systems
@@ -70,6 +68,7 @@ class Zone < ApplicationRecord
       MiqRegion.my_region.update(:maintenance_zone => zone)
     rescue ActiveRecord::RecordInvalid
       raise if zone.errors[:name].blank?
+
       retry
     end
     _log.info("Creating maintenance zone...")
@@ -107,13 +106,29 @@ class Zone < ApplicationRecord
     miq_servers.flat_map(&:active_role_names).uniq
   end
 
+  def maintenance?
+    self.class.maintenance?(self)
+  end
+
   def self.default_zone
     in_my_region.find_by(:name => "default")
   end
 
+  def self.with_active_role(role_name)
+    select { |z| z.role_active?(role_name) }
+  end
+
   # Zone for paused providers (no servers in it), not visible by default
-  cache_with_timeout(:maintenance_zone) do
+  def self.maintenance_zone
     MiqRegion.my_region&.maintenance_zone
+  end
+
+  def self.maintenance?(zone)
+    case zone
+    when NilClass then false
+    when String then maintenance_zone&.name == zone
+    else maintenance_zone == zone
+    end
   end
 
   # The zone to use when inserting a record into MiqQueue
@@ -125,34 +140,6 @@ class Zone < ApplicationRecord
     else
       MiqServer.my_zone
     end
-  end
-
-  def synchronize_logs(*args)
-    options = args.extract_options!
-    enabled = Settings.log.collection.include_automate_models_and_dialogs
-
-    active_miq_servers.each_with_index do |s, index|
-      # If enabled, export the automate domains and dialogs on the first active server
-      include_models_and_dialogs = enabled ? index.zero? : false
-      s.synchronize_logs(*args, options.merge(:include_automate_models_and_dialogs => include_models_and_dialogs))
-    end
-  end
-
-  def last_log_sync_on
-    miq_servers.inject(nil) do |d, s|
-      last = s.last_log_sync_on
-      d ||= last
-      d = last if last && last > d
-      d
-    end
-  end
-
-  def log_collection_active?
-    miq_servers.any?(&:log_collection_active?)
-  end
-
-  def log_collection_active_recently?(since = nil)
-    miq_servers.any? { |s| s.log_collection_active_recently?(since) }
   end
 
   def self.hosts_without_a_zone
@@ -175,10 +162,6 @@ class Zone < ApplicationRecord
     ext_management_systems.select { |e| e.kind_of?(ManageIQ::Providers::DatawarehouseManager) }
   end
 
-  def ems_monitors
-    ext_management_systems.select { |e| e.kind_of?(ManageIQ::Providers::MonitoringManager) }
-  end
-
   def ems_configproviders
     ext_management_systems.select { |e| e.kind_of?(ManageIQ::Providers::ConfigurationManager) }
   end
@@ -189,7 +172,7 @@ class Zone < ApplicationRecord
 
   # @return [Array<ExtManagementSystem>] All emses that can collect Capacity and Utilization metrics
   def ems_metrics_collectable
-    ext_management_systems.supporting(:metrics).select { |e| e.supports?(:metrics) }
+    ext_management_systems.supporting(:metrics)
   end
 
   def ems_networks
@@ -225,8 +208,9 @@ class Zone < ApplicationRecord
 
   def message_for_invalid_delete
     return _("cannot delete default zone") if name == "default"
-    return _("cannot delete maintenance zone") if self == self.class.maintenance_zone
+    return _("cannot delete maintenance zone") if maintenance?
     return _("zone name '%{name}' is used by a server") % {:name => name} if !MiqEnvironment::Command.is_podified? && miq_servers.present?
+
     _("zone name '%{name}' is used by a provider") % {:name => name} if ext_management_systems.present?
   end
 

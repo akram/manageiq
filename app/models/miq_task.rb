@@ -1,5 +1,5 @@
 class MiqTask < ApplicationRecord
-  include_concern 'Purging'
+  include Purging
 
   serialize :context_data
   STATE_INITIALIZED = N_('Initialized').freeze
@@ -30,7 +30,6 @@ class MiqTask < ApplicationRecord
   MESSAGE_TASK_COMPLETED_SUCCESSFULLY   = 'Task completed successfully'.freeze
   MESSAGE_TASK_COMPLETED_UNSUCCESSFULLY = 'Task did not complete successfully'.freeze
 
-  has_one :log_file, :dependent => :destroy
   has_one :binary_blob, :as => :resource, :dependent => :destroy
   has_one :miq_report_result
   has_one :job, :dependent => :destroy
@@ -56,13 +55,13 @@ class MiqTask < ApplicationRecord
   scope :with_updated_on_between, ->(from, to) { where("miq_tasks.updated_on BETWEEN ? AND ?", from, to) }
   scope :with_state,              ->(state)    { where(:state => state) }
   scope :finished,                ->           { with_state('Finished') }
-  scope :running,                 ->           { where.not(:state => %w(Finished Waiting_to_start Queued)) }
-  scope :queued,                  ->           { with_state(%w(Waiting_to_start Queued)) }
+  scope :running,                 ->           { where.not(:state => %w[Finished Waiting_to_start Queued]) }
+  scope :queued,                  ->           { with_state(%w[Waiting_to_start Queued]) }
   scope :completed_ok,            ->           { finished.where(:status => 'Ok') }
   scope :completed_warn,          ->           { finished.where(:status => 'Warn') }
   scope :completed_error,         ->           { finished.where(:status => 'Error') }
   scope :no_status_selected,      ->           { running.where.not(:status => %(Ok Error Warn)) }
-  scope :with_status_in,          ->(s, *rest) { rest.reduce(MiqTask.send(s)) { |chain, r| chain.or(MiqTask.send(r)) } }
+  scope :with_status_in,          ->(*scopes) { merge(scopes.collect { |s| MiqTask.unscoped.send(s) }.inject(:or)) }
 
   def ensure_started
     self.started_on ||= Time.now.utc if state == STATE_ACTIVE
@@ -229,7 +228,7 @@ class MiqTask < ApplicationRecord
   end
 
   def results_ready?
-    status == STATUS_OK && !task_results.blank?
+    status == STATUS_OK && task_results.present?
   end
 
   def queue_callback(state, status, message, result)
@@ -252,14 +251,10 @@ class MiqTask < ApplicationRecord
   end
 
   def task_results
-    # support legacy task that saved results in the results column
-    return Marshal.load(Base64.decode64(results.split("\n").join)) unless results.nil?
     return miq_report_result.report_results unless miq_report_result.nil?
-    unless binary_blob.nil?
-      serializer_name = binary_blob.data_type
-      serializer_name = "Marshal" unless serializer_name == "YAML" # YAML or Marshal, for now
-      serializer = serializer_name.constantize
-      result = serializer.load(binary_blob.binary)
+
+    if binary_blob
+      result = binary_blob.data
       return result.kind_of?(String) ? result.force_encoding("UTF-8") : result
     end
     nil
@@ -327,6 +322,7 @@ class MiqTask < ApplicationRecord
     options[:timeout] ||= 0
     task = MiqTask.find(task_id)
     return nil if task.nil?
+
     begin
       Timeout.timeout(options[:timeout]) do
         while task.state != STATE_FINISHED
@@ -348,7 +344,7 @@ class MiqTask < ApplicationRecord
     MiqQueue.submit_job(
       :class_name  => name,
       :method_name => "destroy_older_by_condition",
-      :args        => [ts, condition],
+      :args        => [ts, condition]
     )
   end
 
@@ -359,11 +355,12 @@ class MiqTask < ApplicationRecord
 
   def self.delete_by_id(ids)
     return if ids.empty?
+
     _log.info("Queuing deletion of tasks with the following ids: #{ids.inspect}")
     MiqQueue.submit_job(
       :class_name  => name,
       :method_name => "destroy",
-      :args        => [ids],
+      :args        => [ids]
     )
   end
 

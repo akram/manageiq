@@ -15,9 +15,11 @@ module MiqReport::Search
     parts = assoc.split(".")
     col = parts.pop
     klass = db_class.follow_associations_with_virtual(parts)
+    # Column is valid if it is accessible via virtual relations or directly.
     raise _("Invalid reflection <%{item}> on model <%{name}>") % {:item => assoc, :name => db_class} if klass.nil?
+
     # only return attribute if it is accessible directly (not through virtual columns)
-    [klass.arel_attribute(col), klass.type_for_attribute(col).type] if db_class.follow_associations(parts)
+    [klass.arel_table[col.to_sym], klass.type_for_attribute(col).type] if db_class.follow_associations(parts)
   end
 
   def limited_ids(limit, offset)
@@ -42,10 +44,12 @@ module MiqReport::Search
   # @return [Array<Arel::Nodes>] for sorting in sql
   def get_order_info
     return [] if sortby.nil? # apply limits (note: without order it is non-deterministic)
+
     # Convert sort cols from sub-tables from the form of assoc_name.column to arel
     Array.wrap(sortby).collect do |c|
       sql_col, sql_type = association_column(c)
       return nil if sql_col.nil?
+
       sql_col = Arel::Nodes::NamedFunction.new('LOWER', [sql_col]) if [:string, :text].include?(sql_type)
       if order.nil?
         sql_col
@@ -82,7 +86,7 @@ module MiqReport::Search
     self.display_filter = options.delete(:display_filter_hash)  if options[:display_filter_hash]
     self.display_filter = options.delete(:display_filter_block) if options[:display_filter_block]
 
-    includes = get_include_for_find
+    includes = get_ar_includes
     self.extras ||= {}
     if extras[:target_ids_for_paging] && db_class.column_names.include?('id')
       return get_cached_page(limited_ids(limit, offset), includes, options)
@@ -93,7 +97,7 @@ module MiqReport::Search
     search_options = options.merge(:class            => db,
                                    :conditions       => conditions,
                                    :include_for_find => includes,
-                                   :references       => get_include
+                                   :references       => get_ar_references
                                   )
     search_options.merge!(:limit => limit, :offset => offset, :order => order) if order
     search_options[:extra_cols] = va_sql_cols if va_sql_cols.present?
@@ -142,6 +146,7 @@ module MiqReport::Search
 
   def filter_results(results, supported_features_filter)
     return results if supported_features_filter.nil?
+
     results.select { |result| result.send(supported_features_filter) }
   end
 end

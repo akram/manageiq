@@ -1,11 +1,17 @@
 class AutomationRequest < MiqRequest
-  alias_attribute :automation_tasks, :miq_request_tasks
-
-  TASK_DESCRIPTION  = 'Automation Request'
+  TASK_DESCRIPTION  = N_('Automation Request')
   DEFAULT_NAMESPACE = "SYSTEM"
   DEFAULT_CLASS     = "PROCESS"
   DEFAULT_INSTANCE  = "AUTOMATION_REQUEST"
   SOURCE_CLASS_NAME = nil
+
+  def automation_tasks
+    miq_request_tasks
+  end
+
+  def automation_tasks=(objects)
+    self.miq_request_tasks = objects
+  end
 
   ##############################################
   # uri_parts:  instance=IIII|message=MMMM or any subset thereof
@@ -47,6 +53,7 @@ class AutomationRequest < MiqRequest
     unless Zone.where(:name => zone_name).exists?
       raise ArgumentError, _("unknown zone %{zone_name}") % {:zone_name => zone_name}
     end
+
     zone_name
   end
 
@@ -61,7 +68,7 @@ class AutomationRequest < MiqRequest
     'automate'
   end
 
-  def log_request_success(_requester_id, _mode)
+  def audit_request_success(_requester_id, _mode)
     # currently we do not log successful automation requests
   end
 

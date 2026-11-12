@@ -1,238 +1,265 @@
 RSpec.describe SupportsFeatureMixin do
-  before { define_post }
+  let(:test_class) do
+    Class.new do
+      attr_accessor :attr1
 
-  after do
-    if defined?(@defined_parent_classes)
-      @defined_parent_classes.each { |klass, children| cleanup_subclass(klass, children) }
-    end
-  end
-
-  def define_post
-    stub_const('Post::Operations::Publishing', Module.new do
-      extend ActiveSupport::Concern
-
-      included do
-        supports :publish
-      end
-    end)
-
-    stub_const('Post::Operations', Module.new do
-      extend ActiveSupport::Concern
-      include Post::Operations::Publishing
-
-      included do
-        supports :archive
-        supports_not :delete
-        supports_not :fake, :reason => 'We keep it real!'
-      end
-    end)
-
-    stub_const('Post', Class.new do
       include SupportsFeatureMixin
-      include Post::Operations
-    end)
-  end
 
-  def define_special_post
-    stub_const('SpecialPost::Operations', Module.new do
-      extend ActiveSupport::Concern
-
-      included do
-        supports :fake do
-          unsupported_reason_add(:fake, 'Need more money') unless bribe
-        end
-      end
-    end)
-
-    stub_const('SpecialPost', Class.new(Post) do
-      include SupportsFeatureMixin
-      include SpecialPost::Operations
-
-      attr_accessor :bribe
-
-      def initialize(options = {})
-        self.bribe = options[:bribe]
-      end
-    end)
-  end
-
-  context "defines method" do
-    it "supports_feature? on the class" do
-      expect(Post.respond_to?(:supports_publish?)).to be true
-    end
-
-    it "supports_feature? on the instance" do
-      expect(Post.new.respond_to?(:supports_publish?)).to be true
-    end
-
-    it "unsupported_reason on the class" do
-      expect(Post.respond_to?(:unsupported_reason)).to be true
-    end
-
-    it "unsupported_reason on the instance" do
-      expect(Post.new.respond_to?(:unsupported_reason)).to be true
-    end
-  end
-
-  context "for a supported feature" do
-    it ".supports_feature? is true" do
-      expect(Post.supports_publish?).to be true
-    end
-
-    it ".supports?(feature) is true" do
-      expect(Post.supports?(:publish)).to be true
-    end
-
-    it "#supports_feature? is true" do
-      expect(Post.new.supports_publish?).to be true
-    end
-
-    it "#unsupported_reason(:feature) is nil" do
-      expect(Post.new.unsupported_reason(:publish)).to be nil
-    end
-
-    it ".unsupported_reason(:feature) is nil" do
-      expect(Post.unsupported_reason(:publish)).to be nil
-    end
-  end
-
-  context "for an unsupported feature" do
-    it ".supports_feature? is false" do
-      expect(Post.supports_fake?).to be false
-    end
-
-    it "#supports_feature? is false" do
-      expect(Post.new.supports_fake?).to be false
-    end
-
-    it "#unsupported_reason(:feature) returns a reason" do
-      expect(Post.new.unsupported_reason(:fake)).to eq "We keep it real!"
-    end
-
-    it ".unsupported_reason(:feature) returns a reason" do
-      expect(Post.unsupported_reason(:fake)).to eq "We keep it real!"
-    end
-  end
-
-  context "for an unsupported feature without a reason" do
-    it ".supports_feature? is false" do
-      expect(Post.supports_delete?).to be false
-    end
-
-    it "#supports_feature? is false" do
-      expect(Post.new.supports_delete?).to be false
-    end
-
-    it "#unsupported_reason(:feature) returns some default reason" do
-      expect(Post.new.unsupported_reason(:delete)).not_to be_blank
-    end
-
-    it ".unsupported_reason(:feature) returns no reason" do
-      expect(Post.unsupported_reason(:delete)).not_to be_blank
-    end
-  end
-
-  context "definition in nested modules" do
-    it "defines a class method on the model" do
-      expect(Post.respond_to?(:supports_archive?)).to be true
-    end
-
-    it "defines an instance method" do
-      expect(Post.new.respond_to?(:supports_archive?)).to be true
-    end
-  end
-
-  context "a feature defined on the base class" do
-    before { define_special_post }
-    it "defines supports_feature? on the subclass" do
-      expect(SpecialPost.respond_to?(:supports_publish?)).to be true
-    end
-
-    it "defines supports_feature? on an instance of the subclass" do
-      expect(SpecialPost.new.respond_to?(:supports_publish?)).to be true
-    end
-
-    it "can be overriden on the subclass" do
-      expect(SpecialPost.supports_fake?).to be true
-    end
-  end
-
-  context "conditionally supported feature" do
-    before { define_special_post }
-    context "when the condition is met" do
-      it "is supported on the class" do
-        expect(SpecialPost.supports_fake?).to be true
+      # no need to make this dynamic
+      def initialize(values = {})
+        @attr1 = values[:attr1]
       end
 
-      it "is supported on the instance" do
-        expect(SpecialPost.new(:bribe => true).supports_fake?).to be true
-      end
+      # usually a name like Post::Operations
+      include(Module.new do
+        extend ActiveSupport::Concern
 
-      it "gives no reason on the class" do
-        expect(SpecialPost.unsupported_reason(:fake)).to be nil
-      end
-
-      it "gives no reason on the instance" do
-        expect(SpecialPost.new(:bribe => true).unsupported_reason(:fake)).to be nil
-      end
-    end
-
-    context "when the condition is not met" do
-      it "gives a reason on the instance" do
-        special_post = SpecialPost.new
-        expect(special_post.supports_fake?).to be false
-        expect(special_post.unsupported_reason(:fake)).to eq "Need more money"
-      end
-
-      it "gives a reason without calling supports_feature? first" do
-        expect(SpecialPost.new.unsupported_reason(:fake)).to eq "Need more money"
-      end
-    end
-
-    context "when the condition changes on the instance" do
-      it "is checks the current condition" do
-        special_post = SpecialPost.new
-        expect(special_post.supports_fake?).to be false
-        expect(special_post.unsupported_reason(:fake)).to eq "Need more money"
-        special_post.bribe = true
-        expect(special_post.supports_fake?).to be true
-        expect(special_post.unsupported_reason(:fake)).to be nil
-      end
-    end
-  end
-
-  context "feature that is implicitly unsupported" do
-    before { define_special_post }
-    it "can be supported by the class" do
-      stub_const("NukeablePost", Class.new(SpecialPost) do
-        supports :nuke do
-          unsupported_reason_add(:nuke, "do not nuke the bribe") if bribe
+        included do
+          supports :module_accept
         end
       end)
-      expect(NukeablePost.new(:bribe => true).supports_nuke?).to be false
-      expect(NukeablePost.new(:bribe => false).supports_nuke?).to be true
+
+      supports :std_accept
+      supports_not :std_denial, :reason => "not available"
+      supports(:dynamic_feature) { "dynamically unsupported" unless attr1 }
     end
   end
 
-  describe ".subclasses_supporting" do
-    it 'detect' do
-      define_subclass("ProviderA", Post, :fake => true)
-      define_subclass("ProviderB", Post, :publish => false, :delete => true, :fake => true)
+  let(:test_inst) { test_class.new }
 
-      expect(Post.subclasses_supporting(:publish).map(&:name)).to eq(%w[ProviderA::Post])
-      expect(Post.subclasses_supporting(:delete).map(&:name)).to eq(%w[ProviderB::Post])
-      expect(Post.subclasses_supporting(:fake).map(&:name)).to match_array(%w[ProviderA::Post ProviderB::Post])
+  describe ".supports?" do
+    it "handles base supports" do
+      expect(test_class.supports?(:std_accept)).to be_truthy
+      expect(test_class.supports?(:module_accept)).to be_truthy
+      expect(test_class.supports?(:std_denial)).to be_falsey
+    end
+
+    it "denies when no denial reason is given" do
+      test_class.supports_not :denial_no_reason
+
+      expect(test_class.supports?(:denial_no_reason)).to be_falsey
+    end
+
+    it "supports dynamic features for classes (note: logic is not called)" do
+      expect(test_class.supports?(:dynamic_feature)).to be_truthy
+    end
+
+    it "handles unknown supports" do
+      expect(test_class.supports?(:denial_unknown_feature)).to be_falsey
+    end
+
+    context "with child class" do
+      it "overrides to deny" do
+        child_class = define_model(nil, test_class, :std_accept => false, :module_accept => false, :dynamic_feature => false)
+        expect(child_class.supports?(:std_accept)).to be_falsey
+        expect(child_class.supports?(:module_accept)).to be_falsey
+        expect(child_class.supports?(:dynamic_feature)).to be_falsey
+      end
+
+      it "overrides to supports" do
+        child_class = define_model(nil, test_class, :std_denial => true)
+        expect(child_class.supports?(:std_denial)).to be_truthy
+      end
+
+      it "overriding to supports with dynamic" do
+        child_class = define_model(nil, test_class, :std_denial => :dynamic)
+
+        expect(child_class.supports?(:std_denial)).to be_truthy
+      end
     end
   end
 
-  describe "provider_classes_supporting" do
-    it 'detects' do
-      define_subclass("ProviderA", Post, :fake => true)
-      define_subclass("ProviderB", Post, :publish => false, :delete => true, :fake => true)
+  describe '#supports?' do
+    it "handles base supports" do
+      expect(test_inst.supports?(:std_accept)).to be_truthy
+      expect(test_inst.supports?(:module_accept)).to be_truthy
+      expect(test_inst.supports?(:std_denial)).to be_falsey
+    end
 
-      expect(Post.provider_classes_supporting(:publish).map(&:name)).to eq(%w[ProviderA])
-      expect(Post.provider_classes_supporting(:delete).map(&:name)).to eq(%w[ProviderB])
-      expect(Post.provider_classes_supporting(:fake).map(&:name)).to match_array(%w[ProviderA ProviderB])
+    it "denies with no reason given" do
+      test_class.supports_not :denial_no_reason
+      expect(test_inst.supports?(:denial_no_reason)).to be_falsey
+    end
+
+    it "handles unknown supports" do
+      expect(test_inst.supports?(:denial_unknown_feature)).to be_falsey
+    end
+
+    it "denies dynamic attrs" do
+      test_inst = test_class.new(:attr1 => false)
+
+      expect(test_inst.supports?(:dynamic_feature)).to be_falsey
+    end
+
+    it "supports dynamic attrs" do
+      test_inst = test_class.new(:attr1 => true)
+
+      expect(test_inst.supports?(:dynamic_feature)).to be_truthy
+    end
+
+    it "denies implicit dynamic attrs" do
+      test_class.supports(:implicit_feature) { "dynamically unsupported" unless attr1 }
+      test_inst = test_class.new(:attr1 => false)
+
+      expect(test_inst.supports?(:implicit_feature)).to be_falsey
+    end
+
+    it "supports implicit dynamic attrs" do
+      test_class.supports(:implicit_feature) { "dynamically unsupported" unless attr1 }
+      test_inst = test_class.new(:attr1 => true)
+
+      expect(test_inst.supports?(:implicit_feature)).to be_truthy
+    end
+
+    it "overrides to deny from child class" do
+      child_class = define_model(nil, test_class, :std_accept => false, :module_accept => false, :dynamic_feature => false)
+      test_inst = child_class.new(:attr1 => true)
+
+      expect(test_inst.supports?(:std_accept)).to be_falsey
+      expect(test_inst.supports?(:module_accept)).to be_falsey
+      expect(test_inst.supports?(:dynamic_feature)).to be_falsey
+    end
+
+    it "overrides to supports with child class" do
+      child_class = define_model(nil, test_class, :std_denial => true, :dynamic_feature => true)
+
+      test_inst = child_class.new(:attr1 => false)
+
+      expect(test_inst.supports?(:std_denial)).to be_truthy
+      expect(test_inst.supports?(:dynamic_feature)).to be_truthy
+    end
+
+    it "instance redirects work properly" do
+      test_class.instance_eval do
+        supports(:dynamic_attr)      { unsupported_reason(:dynamic_operation) }
+        supports(:dynamic_operation) { "unsupported" }
+      end
+
+      child_class = define_model(nil, test_class)
+      child_class.instance_eval do
+        supports(:dynamic_operation) { nil }
+      end
+
+      # parent
+      expect(test_class.new.supports?(:dynamic_operation)).to be_falsey
+      expect(test_class.new.supports?(:dynamic_attr)).to be_falsey
+
+      # child
+      expect(child_class.new.supports?(:dynamic_operation)).to be_truthy
+      expect(child_class.new.supports?(:dynamic_attr)).to be_truthy
+      expect(child_class.new.unsupported_reason(:dynamic_attr)).to eq(nil)
+    end
+
+    context "with dynamic child class" do
+      let(:child_class) do
+        define_model(
+          nil, test_class,
+          :std_denial      => :dynamic,
+          :std_accept      => :dynamic,
+          :module_accept   => :dynamic,
+          :dynamic_feature => :dynamic
+        )
+      end
+
+      it "overriding to supports with dynamic positive logic" do
+        test_inst = child_class.new(:attr1 => true)
+
+        expect(test_inst.supports?(:std_accept)).to be_truthy
+        expect(test_inst.supports?(:module_accept)).to be_truthy
+        expect(test_inst.supports?(:std_denial)).to be_truthy
+        expect(test_inst.supports?(:dynamic_feature)).to be_truthy
+
+        test_inst.attr1 = false
+
+        expect(test_inst.supports?(:std_accept)).to be_falsey
+        expect(test_inst.supports?(:module_accept)).to be_falsey
+        expect(test_inst.supports?(:std_denial)).to be_falsey
+        expect(test_inst.supports?(:dynamic_feature)).to be_falsey
+      end
+    end
+  end
+
+  describe '.unsupported_reason' do
+    it "handles supports" do
+      expect(test_class.unsupported_reason(:std_accept)).to be_nil
+      expect(test_class.unsupported_reason(:module_accept)).to be_nil
+      expect(test_class.unsupported_reason(:std_denial)).to eq "not available"
+    end
+
+    it "defaults denial reason when given no reason" do
+      test_class.supports_not :denial_no_reason
+      expect(test_class.unsupported_reason(:denial_no_reason)).to eq("Feature not available/supported")
+    end
+
+    it "defaults denial reason for unknown feature" do
+      expect(test_class.unsupported_reason(:denial_unknown_feature)).to eq("Feature not available/supported")
+    end
+  end
+
+  describe '#unsupported_reason' do
+    it "handles supports" do
+      expect(test_inst.unsupported_reason(:std_accept)).to be_nil
+      expect(test_inst.unsupported_reason(:module_accept)).to be_nil
+      expect(test_inst.unsupported_reason(:std_denial)).to eq "not available"
+    end
+
+    it "gives defaults denial reason" do
+      test_class.supports_not :denial_no_reason
+      expect(test_inst.unsupported_reason(:denial_no_reason)).to eq("Feature not available/supported")
+    end
+
+    it "defaults denial reason for unknown feature" do
+      expect(test_inst.unsupported_reason(:denial_unknown_feature)).to eq("Feature not available/supported")
+    end
+
+    it "gives reason when dynamic feature" do
+      test_inst = test_class.new(:attr1 => false)
+
+      expect(test_inst.unsupported_reason(:dynamic_feature)).to eq("dynamically unsupported")
+    end
+
+    it "changes reasons when dynamic feature logic changes" do
+      test_inst = test_class.new(:attr1 => false)
+
+      expect(test_inst.unsupported_reason(:dynamic_feature)).to eq("dynamically unsupported")
+
+      test_inst.attr1 = true
+      expect(test_inst.supports?(:dynamic_feature)).to be_truthy # this recalculates the reason
+
+      expect(test_inst.unsupported_reason(:dynamic_feature)).to be_nil
+    end
+
+    it "gives reason when implicit dynamic attrs" do
+      test_class.supports(:implicit_feature) { "dynamically unsupported" unless attr1 }
+      test_inst = test_class.new(:attr1 => false)
+
+      expect(test_inst.unsupported_reason(:implicit_feature)).to eq("dynamically unsupported")
+    end
+
+    it "gives reason when chained to a denail with a default reason" do
+      test_class.supports_not :denial_no_reason
+      test_class.supports(:denial_chained) { unsupported_reason(:denial_no_reason) }
+
+      expect(test_inst.unsupported_reason(:denial_chained)).to eq("Feature not available/supported")
+    end
+
+    it "gives reason when chained to a denail with a default reason (checking supported)" do
+      test_class.supports_not :denial_no_reason
+      test_class.supports(:denial_chained) { unsupported_reason(:denial_no_reason) unless supports?(:denial_no_reason) }
+
+      expect(test_inst.unsupported_reason(:denial_chained)).to eq("Feature not available/supported")
+    end
+
+    it "gives no reason when chained to an attribute with success" do
+      test_class.supports(:std_chained) { unsupported_reason(:std_accept) }
+
+      expect(test_inst.unsupported_reason(:std_chained)).to eq(nil)
+    end
+
+    it "gives no reason when chained to an attribute with success (checking supported)" do
+      test_class.supports(:std_chained) { unsupported_reason(:std_accept) unless supports?(:std_accept) }
+
+      expect(test_inst.unsupported_reason(:std_chained)).to eq(nil)
     end
   end
 
@@ -242,6 +269,28 @@ RSpec.describe SupportsFeatureMixin do
                  :archive => true,
                  :delete  => false,
                  :fake    => 'We keep it real!')
+  end
+
+  describe ".subclasses_supporting" do
+    it 'detect' do
+      define_subclass("ProviderA", model, :fake => true)
+      define_subclass("ProviderB", model, :publish => false, :delete => true, :fake => true)
+
+      expect(model.subclasses_supporting(:publish).map(&:name)).to eq(%w[ProviderA::Model])
+      expect(model.subclasses_supporting(:delete).map(&:name)).to eq(%w[ProviderB::Model])
+      expect(model.subclasses_supporting(:fake).map(&:name)).to match_array(%w[ProviderA::Model ProviderB::Model])
+    end
+  end
+
+  describe ".provider_classes_supporting" do
+    it 'detects' do
+      define_subclass("ProviderA", model, :fake => true)
+      define_subclass("ProviderB", model, :publish => false, :delete => true, :fake => true)
+
+      expect(model.provider_classes_supporting(:publish).map(&:name)).to eq(%w[ProviderA])
+      expect(model.provider_classes_supporting(:delete).map(&:name)).to eq(%w[ProviderB])
+      expect(model.provider_classes_supporting(:fake).map(&:name)).to match_array(%w[ProviderA ProviderB])
+    end
   end
 
   describe ".supporting" do
@@ -262,17 +311,21 @@ RSpec.describe SupportsFeatureMixin do
 
   describe ".providers_supporting" do
     it 'detect' do
-      providera = define_subclass("ProviderA", ExtManagementSystem)
-      providerb = define_subclass("ProviderB", ExtManagementSystem)
-      providerc = define_subclass("ProviderC", ExtManagementSystem)
+      # providers_supporting directly references the ExtMangementSystem model, so
+      # we stub it to our own model tree instead for testing.
+      stub_const("ExtManagementSystem", model)
+
+      providera = define_subclass("ProviderA", model)
+      providerb = define_subclass("ProviderB", model)
+      providerc = define_subclass("ProviderC", model)
 
       define_subclass(providera.name, model, :fake => true)
       define_subclass(providerb.name, model, :publish => false, :delete => true, :fake => true)
       define_subclass(providerc.name, model, :publish => false, :delete => true, :fake => true)
 
-      FactoryBot.create(:ext_management_system, :type => providera.name, :name => "a1")
-      FactoryBot.create(:ext_management_system, :type => providera.name, :name => "a2")
-      FactoryBot.create(:ext_management_system, :type => providerb.name, :name => "b1")
+      providera.create(:name => "a1")
+      providera.create(:name => "a2")
+      providerb.create(:name => "b1")
 
       expect(model.providers_supporting(:publish).map(&:name)).to match_array(%w[a1 a2])
       expect(model.providers_supporting(:delete).map(&:name)).to eq(%w[b1])
@@ -283,27 +336,20 @@ RSpec.describe SupportsFeatureMixin do
   private
 
   def define_model(class_name, parent, supporting_values = {})
-    define_supporting_class(class_name, parent, supporting_values) do |r|
-      r.table_name = "vms" if parent.ancestors.include?(ActiveRecord::Base)
-      yield(r) if block_given?
-    end
+    define_supporting_class(class_name, parent, supporting_values)
   end
 
   def define_subclass(module_name, parent, supports_values = {})
     define_supporting_class("#{module_name}::#{parent.name}", parent, supports_values)
   end
 
-  # these descendants are stored in a cache in active support
-  # this cleans out those values so future runs do not have bogus classes
-  # this causes sporadic test failures.
-  def cleanup_subclass(parent, children)
-    tracker = ActiveSupport::DescendantsTracker.class_variable_get(:@@direct_descendants)[parent]
-    tracker&.reject! { |child| children.include?(child) }
-  end
-
   def define_supporting_class(class_name, parent, supports_values = {})
-    child = stub_const(class_name, Class.new(parent) do
-      include SupportsFeatureMixin
+    child = Class.new(parent) do
+      include SupportsFeatureMixin unless parent.respond_to?(:supports?)
+
+      # ActiveRecord classes need a table. Use vms table (any would work)
+      # This also helps when the active record class does not have a name.
+      self.table_name = "vms" if parent.ancestors.include?(ActiveRecord::Base)
 
       yield(self) if block_given?
       supports_values.each do |feature, value|
@@ -314,15 +360,15 @@ RSpec.describe SupportsFeatureMixin do
           supports_not feature
         when String
           supports_not feature, :reason => value
-        when Callable
-          supports(feature, &value)
+        when :dynamic
+          supports(feature) { "dynamically unsupported" unless attr1 }
         else
           raise "trouble defining #{feature} with #{value.class.name}"
         end
       end
-    end)
-    # remember what is subclasses so we can clean up the descendant cache
-    ((@defined_parent_classes ||= {})[parent] ||= []) << child
+    end
+
+    stub_const(class_name, child) if class_name
     child
   end
 end

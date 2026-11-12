@@ -196,7 +196,7 @@ RSpec.describe MiqRequestWorkflow do
         before do
           dialogs[:dialogs].keys.each do |dialog_name|
             workflow.get_all_fields(dialog_name).each_pair do |_, field_values|
-              field_values[:values] = [%w(test 100), %w(test2 0)]
+              field_values[:values] = [%w[test 100], %w[test2 0]]
             end
           end
         end
@@ -253,6 +253,7 @@ RSpec.describe MiqRequestWorkflow do
     let(:ems)           { FactoryBot.create(:ext_management_system) }
     let(:resource_pool) { FactoryBot.create(:resource_pool, :ems_id => ems.id) }
     let(:host)          { FactoryBot.create(:host, :ems_id => ems.id) }
+    let(:storage)       { FactoryBot.create(:storage, :ems_id => ems.id) }
 
     before { allow_any_instance_of(User).to receive(:get_timezone).and_return("UTC") }
 
@@ -311,6 +312,102 @@ RSpec.describe MiqRequestWorkflow do
         allow(workflow).to receive(:get_source_and_targets).and_return(:ems => nil)
         expect(workflow).to receive(:allowed_ci).with(:cluster, [:respool, :host, :folder], [])
         workflow.allowed_clusters
+      end
+    end
+
+    context "#allowed_storages" do
+      it "filters out storages not mounted to allowed hosts" do
+        allow(workflow).to receive(:get_source_and_targets).and_return(:ems => workflow.ci_to_hash_struct(ems))
+        allow(workflow).to receive(:allowed_hosts_obj).and_return([host])
+
+        expect(workflow.allowed_storages).to be_empty
+      end
+
+      context "with writable accessible storages" do
+        before { FactoryBot.create(:host_storage, :host => host, :storage => storage) }
+
+        it "returns all storages" do
+          allow(workflow).to receive(:get_source_and_targets).and_return(:ems => workflow.ci_to_hash_struct(ems))
+          allow(workflow).to receive(:allowed_hosts_obj).and_return([host])
+
+          expect(workflow.allowed_storages.map(&:id)).to eq([storage.id])
+        end
+
+        context "with a selected storage profile" do
+          let!(:storage_profile) { FactoryBot.create(:storage_profile, :ems_id => ems.id) }
+          let!(:storage_2)       { FactoryBot.create(:storage, :ems_id => ems.id, :hosts => [host], :storage_profiles => [storage_profile]) }
+
+          before do
+            workflow.values[:placement_storage_profile] = [storage_profile.id, storage_profile.name]
+          end
+
+          it "filters out storages not in the storage profile" do
+            allow(workflow).to receive(:get_source_and_targets).and_return(:ems => workflow.ci_to_hash_struct(ems))
+            allow(workflow).to receive(:allowed_hosts_obj).and_return([host])
+
+            expect(workflow.allowed_storages.map(&:id)).to eq([storage_2.id])
+          end
+        end
+
+        context "with a user with a belongs_to_filter" do
+          let(:root_folder) { FactoryBot.create(:ems_folder, :ems_id => ems.id).tap        { |f| f.add_parent(ems) } }
+          let(:datacenter)  { FactoryBot.create(:vmware_datacenter, :ems_id => ems.id).tap { |d| d.add_parent(root_folder) } }
+          let(:storage)     { FactoryBot.create(:storage, :ems_id => ems.id).tap           { |s| s.add_parent(datacenter) } }
+
+          let(:entitlement_filters) { {"managed" => [], "belongsto" => belongsto_filter} }
+          let(:entitlement)         { FactoryBot.create(:entitlement, :filters => entitlement_filters) }
+
+          before do
+            group = workflow.requester.miq_groups.first
+            group.entitlement = entitlement
+            group.save!
+          end
+
+          context "with a filter that doesn't include the storage" do
+            let(:datacenter2) { FactoryBot.create(:vmware_datacenter, :ems_id => ems.id).tap { |f| f.add_parent(root_folder) } }
+            let(:belongsto_filter) { ["/belongsto/ExtManagementSystem|#{ems.name}/EmsFolder|#{root_folder.name}/EmsFolder|#{datacenter2.name}"] }
+
+            it "filters out storages" do
+              allow(workflow).to receive(:get_source_and_targets).and_return(:ems => workflow.ci_to_hash_struct(ems))
+              allow(workflow).to receive(:allowed_hosts_obj).and_return([host])
+
+              expect(workflow.allowed_storages.map(&:id)).to be_empty
+            end
+          end
+
+          context "with a filter that includes the storage" do
+            let(:belongsto_filter) { ["/belongsto/ExtManagementSystem|#{ems.name}/EmsFolder|#{root_folder.name}/EmsFolder|#{datacenter.name}/Storage|#{storage.name}"] }
+
+            it "returns the storage" do
+              allow(workflow).to receive(:get_source_and_targets).and_return(:ems => workflow.ci_to_hash_struct(ems))
+              allow(workflow).to receive(:allowed_hosts_obj).and_return([host])
+
+              expect(workflow.allowed_storages.map(&:id)).to eq([storage.id])
+            end
+          end
+        end
+      end
+
+      context "with read-only storages" do
+        before { FactoryBot.create(:host_storage, :host => host, :storage => storage, :read_only => true) }
+
+        it "filters out read-only storages" do
+          allow(workflow).to receive(:get_source_and_targets).and_return(:ems => workflow.ci_to_hash_struct(ems))
+          allow(workflow).to receive(:allowed_hosts_obj).and_return([host])
+
+          expect(workflow.allowed_storages).to be_empty
+        end
+      end
+
+      context "with inaccessible storages" do
+        before { FactoryBot.create(:host_storage, :host => host, :storage => storage, :read_only => false, :accessible => false) }
+
+        it "filters out read-only storages" do
+          allow(workflow).to receive(:get_source_and_targets).and_return(:ems => workflow.ci_to_hash_struct(ems))
+          allow(workflow).to receive(:allowed_hosts_obj).and_return([host])
+
+          expect(workflow.allowed_storages).to be_empty
+        end
       end
     end
   end
@@ -409,7 +506,7 @@ RSpec.describe MiqRequestWorkflow do
     end
 
     it "returns a detailed formatting message when fail details are defined" do
-      expect(workflow.validate_regex(nil, {}, {}, regex_with_details, value_no_email)).to eq "'/' must be correctly"\
+      expect(workflow.validate_regex(nil, {}, {}, regex_with_details, value_no_email)).to eq "'/' must be correctly" \
         " formatted. We are looking for a specific email here."
     end
   end
@@ -421,7 +518,7 @@ RSpec.describe MiqRequestWorkflow do
       expect(request.options[:requester_group]).to eq(workflow.requester.miq_group_description)
     end
 
-    it "doesnt set owner_group" do
+    it "doesnt set owner_group without owner_email" do
       values = {}
       request = workflow.make_request(nil, values)
       expect(request.options[:owner_group]).not_to be
@@ -473,8 +570,8 @@ RSpec.describe MiqRequestWorkflow do
       ems_folder.ext_management_system = ems
       attrs = ems_folder.attributes.merge(:object => workflow.ems_folder_to_hash_struct(ems_folder))
       xml_hash = XmlHash::Element.new('EmsFolder', attrs)
-      hash = { ResourcePool => { resource_pool.id => xml_hash } }
-      workflow.instance_variable_set("@ems_xml_nodes", hash)
+      hash = {ResourcePool => {resource_pool.id => xml_hash}}
+      workflow.instance_variable_set(:@ems_xml_nodes, hash)
     end
 
     it "returns nil if :respool is nil" do
@@ -494,8 +591,8 @@ RSpec.describe MiqRequestWorkflow do
       ems_folder.ext_management_system = ems
       attrs = resource_pool.attributes.merge(:object => resource_pool, :ems => ems)
       xml_hash = XmlHash::Element.new('ResourcePool', attrs)
-      hash = { EmsFolder => { ems_folder.id => xml_hash } }
-      workflow.instance_variable_set("@ems_xml_nodes", hash)
+      hash = {EmsFolder => {ems_folder.id => xml_hash}}
+      workflow.instance_variable_set(:@ems_xml_nodes, hash)
     end
 
     it "returns nil if :folder is nil" do
@@ -514,8 +611,8 @@ RSpec.describe MiqRequestWorkflow do
       datacenter.ext_management_system = ems
       attrs = datacenter.attributes.merge(:object => workflow.ems_folder_to_hash_struct(datacenter), :ems => ems)
       xml_hash = XmlHash::Element.new('EmsFolder', attrs)
-      hash = { EmsFolder => { datacenter.id => xml_hash } }
-      workflow.instance_variable_set("@ems_xml_nodes", hash)
+      hash = {EmsFolder => {datacenter.id => xml_hash}}
+      workflow.instance_variable_set(:@ems_xml_nodes, hash)
     end
 
     it "returns a datacenter" do
@@ -525,7 +622,7 @@ RSpec.describe MiqRequestWorkflow do
   end
 
   describe '#validate_data_types?' do
-    %w(array_integer integer float array).each do |name|
+    %w[array_integer integer float array].each do |name|
       let("fld_#{name}".to_sym) { {:error => nil, :data_type => name.to_sym} }
     end
 

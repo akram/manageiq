@@ -48,13 +48,23 @@ RSpec.describe MiqWorker::Runner do
     end
   end
 
+  context ".ruby_object_usage" do
+    it "handles BasicObjects in memory" do
+      10.times { BasicObject.new }
+      usage = described_class.ruby_object_usage
+      %w[String Array Class Regexp Hash].each do |klass|
+        expect(usage[klass]).to be > 0
+      end
+    end
+  end
+
   context "#initialize" do
     let(:worker) do
       server_id = EvmSpecHelper.local_miq_server.id
       FactoryBot.create(:miq_worker, :miq_server_id => server_id, :type => "MiqGenericWorker")
     end
 
-    let!(:runner) { MiqWorker::Runner.new(:guid => worker.guid) }
+    let!(:runner) { MiqGenericWorker::Runner.new(:guid => worker.guid) }
 
     it "configures the #worker attribute correctly" do
       expect(runner.worker.id).to eq(worker.id)
@@ -63,6 +73,90 @@ RSpec.describe MiqWorker::Runner do
 
     it "sets the MiqWorker.my_guid class attribute" do
       expect(MiqWorker.my_guid).to eq(worker.guid)
+    end
+  end
+
+  context "#rails_worker? false" do
+    let(:worker) do
+      miq_server = EvmSpecHelper.local_miq_server
+      FactoryBot.create(:miq_generic_worker, :miq_server_id => miq_server.id)
+    end
+
+    let!(:runner) { worker.class::Runner.new(:guid => worker.guid) }
+
+    before { allow(worker).to receive(:rails_worker?).and_return(false) }
+
+    describe "#worker_env (private)" do
+      it "returns environment variables for the worker" do
+        expect(runner.send(:worker_env)).to include(
+          "APP_ROOT"              => Rails.root.to_s,
+          "GUID"                  => worker.guid,
+          "WORKER_HEARTBEAT_FILE" => worker.heartbeat_file
+        )
+      end
+    end
+
+    describe "#worker_options (private)" do
+      it "returns messaging options" do
+        expect(runner.send(:worker_options)).to include(:messaging => MiqQueue.messaging_client_options)
+      end
+
+      it "returns worker-specific worker settings" do
+        expect(runner.send(:worker_options)).to include(
+          :settings => hash_including(
+            :worker_settings => hash_including(:count => 2)
+          )
+        )
+      end
+
+      it "returns default settings from the parent" do
+        expect(runner.send(:worker_options)).to include(
+          :settings => hash_including(
+            :worker_settings => hash_including(:poll_method => "normal")
+          )
+        )
+      end
+
+      it "returns settings with integer values not strings like '10.minutes'" do
+        expect(runner.send(:worker_options)).to include(
+          :settings => hash_including(
+            :worker_settings => hash_including(
+              :memory_threshold => 1.gigabyte,
+              :starting_timeout => 600
+            )
+          )
+        )
+      end
+
+      it "returns additional settings requested by the worker class" do
+        allow(worker.class).to receive(:worker_settings_paths).and_return([%i[log level]])
+        expect(runner.send(:worker_options)).to include(
+          :settings => hash_including(
+            :log => hash_including(:level => "info")
+          )
+        )
+      end
+
+      it "returns settings with encrypted passwords decrypted" do
+        stub_settings_merge(:http_proxy => {:default => {:password => ManageIQ::Password.encrypt("secret")}})
+        allow(worker.class).to receive(:worker_settings_paths).and_return([%i[http_proxy default]])
+
+        expect(runner.send(:worker_options)).to include(
+          :settings => hash_including(
+            :http_proxy => hash_including(
+              :default => hash_including(
+                :password => "secret"
+              )
+            )
+          )
+        )
+      end
+    end
+
+    describe ".worker_cmdline (private)" do
+      it "returns a path to the worker binary" do
+        expect(runner.send(:worker_cmdline)).to eq(Rails.root.join("workers/miq_generic_worker/worker").to_s)
+      end
     end
   end
 end

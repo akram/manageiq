@@ -64,6 +64,7 @@ namespace :evm do
   desc "Determine if the configured encryption key is valid"
   task :validate_encryption_key => :environment do
     raise "Invalid encryption key" unless EvmApplication.encryption_key_valid?
+
     puts "Encryption key valid"
   end
 
@@ -79,7 +80,8 @@ namespace :evm do
       "new_deployment" => 3,
       "new_replica"    => 4,
       "redeployment"   => 5,
-      "upgrade"        => 6
+      "upgrade"        => 6,
+      "no_database"    => 7
     }
 
     status = EvmApplication.deployment_status

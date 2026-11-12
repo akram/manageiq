@@ -15,38 +15,81 @@ class ContainerOrchestrator
           :template => {
             :metadata => {:name => name, :labels => common_labels.merge(:name => name)},
             :spec     => {
+              :affinity => {
+                :nodeAffinity => {
+                  :requiredDuringSchedulingIgnoredDuringExecution => {
+                    :nodeSelectorTerms => [{
+                      :matchExpressions => [
+                        {:key => "kubernetes.io/arch", :operator => "In", :values => ContainerOrchestrator.new.my_node_affinity_arch_values}
+                      ]}
+                    ]
+                  }
+                }
+              },
               :serviceAccountName => ENV["WORKER_SERVICE_ACCOUNT"],
               :containers         => [{
-                :name          => name,
-                :env           => default_environment,
-                :livenessProbe => liveness_probe
-              }]
-            }
+                :name            => name,
+                :env             => default_environment,
+                :livenessProbe   => liveness_probe,
+                :securityContext => {
+                  :allowPrivilegeEscalation => false,
+                  :privileged               => false,
+                  :runAsNonRoot             => true,
+                  :capabilities             => {
+                    :drop => ["ALL"]
+                  }
+                },
+                :volumeMounts    => [
+                  {:name => "database-secret", :readOnly => true, :mountPath => "/run/secrets/postgresql"},
+                  {:name => "encryption-key", :readOnly => true, :mountPath => "/run/secrets/manageiq/application"},
+                ]
+              }],
+              :volumes => [
+                {
+                  :name   => "database-secret",
+                  :secret => {
+                    :secretName => "postgresql-secrets",
+                    :items      => [
+                      {:key => "dbname",   :path => "POSTGRESQL_DATABASE"},
+                      {:key => "hostname", :path => "POSTGRESQL_HOSTNAME"},
+                      {:key => "password", :path => "POSTGRESQL_PASSWORD"},
+                      {:key => "port",     :path => "POSTGRESQL_PORT"},
+                      {:key => "username", :path => "POSTGRESQL_USER"},
+                    ],
+                  }
+                },
+                {
+                  :name   => "encryption-key",
+                  :secret => {
+                    :secretName => "app-secrets",
+                    :items      => [
+                      {:key => "encryption-key", :path => "encryption_key"},
+                    ],
+                  }
+                }
+              ]
+            },
           }
         }
       }
 
       if File.file?("/.postgresql/root.crt")
-        deployment[:spec][:template][:spec][:containers][0][:volumeMounts] = [
-          {
-            :mountPath => "/.postgresql",
-            :name      => "pg-root-certificate",
-            :readOnly  => true,
-          }
-        ]
+        deployment[:spec][:template][:spec][:containers][0][:volumeMounts] << {
+          :mountPath => "/.postgresql",
+          :name      => "pg-root-certificate",
+          :readOnly  => true,
+        }
 
-        deployment[:spec][:template][:spec][:volumes] = [
-          {
-            :name   => "pg-root-certificate",
-            :secret => {
-              :secretName => "postgresql-secrets",
-              :items      => [
-                :key  => "rootcertificate",
-                :path => "root.crt",
-              ],
-            }
+        deployment[:spec][:template][:spec][:volumes] << {
+          :name   => "pg-root-certificate",
+          :secret => {
+            :secretName => "postgresql-secrets",
+            :items      => [
+              :key  => "rootcertificate",
+              :path => "root.crt",
+            ],
           }
-        ]
+        }
       end
 
       if ENV["SSL_SECRET_NAME"].present?
@@ -65,6 +108,25 @@ class ContainerOrchestrator
             :items      => [
               :key  => "root_crt",
               :path => "root.crt",
+            ],
+          }
+        }
+      else
+        deployment[:spec][:template][:spec][:containers][0][:volumeMounts] ||= []
+        deployment[:spec][:template][:spec][:containers][0][:volumeMounts] << {
+          :mountPath => "/etc/pki/ca-trust/source/anchors",
+          :name      => "messaging-certificate",
+          :readOnly  => true,
+        }
+
+        deployment[:spec][:template][:spec][:volumes] ||= []
+        deployment[:spec][:template][:spec][:volumes] << {
+          :name   => "messaging-certificate",
+          :secret => {
+            :secretName => "manageiq-cluster-ca-cert",
+            :items      => [
+              :key  => "ca.crt",
+              :path => "ca.crt",
             ],
           }
         }
@@ -108,22 +170,18 @@ class ContainerOrchestrator
       [
         {:name => "GUID",                    :value => MiqServer.my_guid},
         {:name => "HOME",                    :value => Rails.root.join("tmp").to_s},
+        {:name => "APPLICATION_DOMAIN",      :value => ENV["APPLICATION_DOMAIN"]},
         {:name => "MEMCACHED_SERVER",        :value => ENV["MEMCACHED_SERVER"]},
         {:name => "MEMCACHED_SERVICE_NAME",  :value => ENV["MEMCACHED_SERVICE_NAME"]},
-        {:name => "WORKER_HEARTBEAT_FILE",   :value => Rails.root.join("tmp", "worker.hb").to_s},
+        {:name => "WORKER_HEARTBEAT_FILE",   :value => Rails.root.join("tmp/worker.hb").to_s},
         {:name => "WORKER_HEARTBEAT_METHOD", :value => "file"},
-        {:name => "ENCRYPTION_KEY",          :valueFrom => {:secretKeyRef=>{:name => "app-secrets", :key => "encryption-key"}}}
+        {:name => "TERRAFORM_RUNNER_URL",    :value => "https://opentofu-runner:6000"},
       ] + database_environment + memcached_environment + messaging_environment
     end
 
     def database_environment
       [
-        {:name => "DATABASE_PORT",     :value => ENV["DATABASE_PORT"]},
         {:name => "DATABASE_SSL_MODE", :value => ENV["DATABASE_SSL_MODE"]},
-        {:name => "DATABASE_HOSTNAME", :valueFrom => {:secretKeyRef=>{:name => "postgresql-secrets", :key => "hostname"}}},
-        {:name => "DATABASE_NAME",     :valueFrom => {:secretKeyRef=>{:name => "postgresql-secrets", :key => "dbname"}}},
-        {:name => "DATABASE_PASSWORD", :valueFrom => {:secretKeyRef=>{:name => "postgresql-secrets", :key => "password"}}},
-        {:name => "DATABASE_USER",     :valueFrom => {:secretKeyRef=>{:name => "postgresql-secrets", :key => "username"}}},
       ]
     end
 
@@ -142,12 +200,11 @@ class ContainerOrchestrator
       [
         {:name => "MESSAGING_PORT", :value => ENV["MESSAGING_PORT"]},
         {:name => "MESSAGING_TYPE", :value => ENV["MESSAGING_TYPE"]},
-        {:name      => "MESSAGING_HOSTNAME",
-         :valueFrom => {:secretKeyRef=>{:name => "kafka-secrets", :key => "hostname"}}},
-        {:name      => "MESSAGING_PASSWORD",
-         :valueFrom => {:secretKeyRef=>{:name => "kafka-secrets", :key => "password"}}},
-        {:name      => "MESSAGING_USERNAME",
-         :valueFrom => {:secretKeyRef=>{:name => "kafka-secrets", :key => "username"}}}
+        {:name => "MESSAGING_SSL_CA", :value => ENV["MESSAGING_SSL_CA"]},
+        {:name => "MESSAGING_SASL_MECHANISM", :value => ENV["MESSAGING_SASL_MECHANISM"]},
+        {:name => "MESSAGING_HOSTNAME", :value => ENV["MESSAGING_HOSTNAME"]},
+        {:name => "MESSAGING_PASSWORD", :value => ENV["MESSAGING_PASSWORD"]},
+        {:name => "MESSAGING_USERNAME", :value => ENV["MESSAGING_USERNAME"]}
       ]
     end
 

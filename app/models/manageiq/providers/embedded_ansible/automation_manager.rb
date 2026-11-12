@@ -1,22 +1,6 @@
 class ManageIQ::Providers::EmbeddedAnsible::AutomationManager < ManageIQ::Providers::EmbeddedAutomationManager
-  require_nested :Credential
-  require_nested :AmazonCredential
-  require_nested :AzureCredential
-  require_nested :CloudCredential
-  require_nested :GoogleCredential
-  require_nested :MachineCredential
-  require_nested :NetworkCredential
-  require_nested :OpenstackCredential
-  require_nested :RhvCredential
-  require_nested :ScmCredential
-  require_nested :VaultCredential
-  require_nested :VmwareCredential
-
-  require_nested :ConfigurationScriptSource
-  require_nested :ConfigurationWorkflow
-  require_nested :ConfiguredSystem
-  require_nested :Job
-  require_nested :Playbook
+  supports     :catalog
+  supports_not :refresh_ems
 
   def self.ems_type
     @ems_type ||= "embedded_ansible_automation".freeze
@@ -24,5 +8,9 @@ class ManageIQ::Providers::EmbeddedAnsible::AutomationManager < ManageIQ::Provid
 
   def self.description
     @description ||= "Embedded Ansible Automation".freeze
+  end
+
+  def self.catalog_types
+    {"generic_ansible_playbook" => N_("Ansible Playbook")}
   end
 end

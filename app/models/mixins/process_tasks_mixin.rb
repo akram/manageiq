@@ -6,12 +6,13 @@ module ProcessTasksMixin
     # Processes tasks received from the UI and queues them
     def process_tasks(options)
       raise _("No ids given to process_tasks") if options[:ids].blank?
+
       if options[:task] == 'retire_now'
         options[:ids].each do |id|
           $log.info("Creating retire request for id [#{id}] with user [#{User.current_user.userid}]")
           name.constantize.make_retire_request(id, User.current_user)
         end
-      elsif options[:task] == "refresh_ems" && respond_to?("refresh_ems")
+      elsif options[:task] == "refresh_ems" && respond_to?(:refresh_ems)
         refresh_ems(options[:ids])
         msg = "'#{options[:task]}' initiated for #{options[:ids].length} #{ui_lookup(:table => base_class.name).pluralize}"
         task_audit_event(:success, options, :message => msg)
@@ -77,7 +78,7 @@ module ProcessTasksMixin
           next
         rescue => err
           # Handle specific error case, until we can figure out how it occurs
-          if err.class == ArgumentError && err.message == "cannot interpret as DNS name: nil"
+          if err.instance_of?(ArgumentError) && err.message == "cannot interpret as DNS name: nil"
             $log.error("An error occurred while invoking remote tasks...")
             $log.log_backtrace(err)
             next
@@ -202,12 +203,13 @@ module ProcessTasksMixin
 
     # default: validate retirement and maintenance zone, can be overridden
     def validate_task(task, instance, options)
-      if instance.try(:ext_management_system)&.zone == Zone.maintenance_zone
+      if instance.try(:ext_management_system)&.zone&.maintenance?
         task.error("#{instance.ext_management_system.name} is paused")
         return false
       end
 
       return true unless options[:task] == "retire_now" && instance.retired?
+
       task.error("#{instance.name} is already retired")
       false
     end

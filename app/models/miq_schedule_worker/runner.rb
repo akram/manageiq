@@ -4,7 +4,6 @@ class MiqScheduleWorker::Runner < MiqWorker::Runner
   set_callback(:dst_change, :after, :load_user_schedules)
 
   ROLES_NEEDING_RESTART = ["scheduler", "ems_metrics_coordinator", "event"]
-  SCHEDULE_MEDIUM_PRIORITY = MiqQueue.priority(:normal, :higher, 10)
   CLASS_TAG = "MiqSchedule"
 
   def after_initialize
@@ -25,6 +24,7 @@ class MiqScheduleWorker::Runner < MiqWorker::Runner
 
   def check_dst
     return if @dst == dst?
+
     run_callbacks(:dst_change) do
       reset_dst
     end
@@ -60,7 +60,7 @@ class MiqScheduleWorker::Runner < MiqWorker::Runner
 
   def scheduler_for(role)
     @schedules[role] ||= []
-    ::MiqScheduleWorker::Scheduler.new(self._log, @schedules[role], @system_scheduler)
+    ::MiqScheduleWorker::Scheduler.new(_log, @schedules[role], @system_scheduler)
   end
 
   def schedules_for_all_roles
@@ -120,6 +120,7 @@ class MiqScheduleWorker::Runner < MiqWorker::Runner
   def schedules_for_scheduler_role
     # These schedules need to run only once in a region per interval, so let the single scheduler role handle them
     return unless schedule_enabled?(:scheduler)
+
     scheduler = scheduler_for(:scheduler)
 
     # Schedule - Check for timed out jobs
@@ -182,10 +183,10 @@ class MiqScheduleWorker::Runner < MiqWorker::Runner
       enqueue(:vm_scan_dispatcher_dispatch)
     end
 
-    # Schedule - ManageIQ::Providers::IbmCloud::PowerVirtualServers::CloudManager::ImageImportWorkflow::ImportDispatcher
-    # Queue a ManageIQ::Providers::IbmCloud::PowerVirtualServers::CloudManager::ImageImportWorkflow::ImportDispatcher task unless there's already one on the queue
-    scheduler.schedule_every(:image_import_pvc_to_pvs_dispatcher_dispatch, worker_settings[:image_import_pvc_to_pvs_dispatcher_interval]) do
-      enqueue(:image_import_pvc_to_pvs_dispatcher_dispatch)
+    # Schedule - ManageIQ::Providers::ImageImportJob::Dispatcher
+    # Queue a ManageIQ::Providers::ImageImportJob::Dispatcher task unless there's already one on the queue
+    scheduler.schedule_every(:image_import_dispatcher_dispatch, worker_settings[:image_import_dispatcher_interval]) do
+      enqueue(:image_import_dispatcher_dispatch)
     end
 
     # Schedule - Check for a stuck VmScan::Dispatcher#dispatch
@@ -238,12 +239,28 @@ class MiqScheduleWorker::Runner < MiqWorker::Runner
       enqueue(:binary_blob_purge_timer)
     end
 
+    # Schedule - Purging of audit events
+    scheduler.schedule_every(
+      :audit_event_purge_timer,
+      worker_settings[:audit_events_purge_interval]
+    ) do
+      enqueue(:audit_event_purge_timer)
+    end
+
     # Schedule - Purging of notifications
     scheduler.schedule_every(
       :notification_purge_timer,
       worker_settings[:notifications_purge_interval]
     ) do
       enqueue(:notification_purge_timer)
+    end
+
+    # Schedule - Purging of request logs
+    scheduler.schedule_every(
+      :request_log_purge_timer,
+      worker_settings[:request_logs_purge_interval]
+    ) do
+      enqueue(:request_log_purge_timer)
     end
 
     # Schedule - Purging of tasks
@@ -318,7 +335,7 @@ class MiqScheduleWorker::Runner < MiqWorker::Runner
     scheduler.schedule_every(
       :check_for_timed_out_active_tasks,
       every,
-      :first_at => Time.current + 1.minute
+      :first_at => 1.minute.from_now
     ) do
       enqueue(:check_for_timed_out_active_tasks)
     end
@@ -329,26 +346,27 @@ class MiqScheduleWorker::Runner < MiqWorker::Runner
     every = worker_settings[:chargeback_generation_interval]
     at = worker_settings[:chargeback_generation_time_utc]
     time_at = Time.current.strftime("%Y-%m-%d #{at}").to_time(:utc)
-    time_at += 1.day if time_at < Time.current + 1.hour
+    time_at += 1.day if time_at < 1.hour.from_now
     scheduler = scheduler_for(:scheduler)
     scheduler.schedule_every(
       :generate_chargeback_for_service,
       every,
       :first_at => time_at
     ) do
-      enqueue([:generate_chargeback_for_service, :report_source => "Daily scheduler"])
+      enqueue([:generate_chargeback_for_service, {:report_source => "Daily scheduler"}])
     end
   end
 
   def schedules_for_database_operations_role
     return unless schedule_enabled?(:database_operations)
+
     scheduler = scheduler_for(:database_operations)
 
     # Schedule - Database reindexing
     scheduler.schedule_cron(
       :database_maintenance_reindex_timer,
       ::Settings.database.maintenance.reindex_schedule,
-      :tags => %i(database_operations database_maintenance_reindex_schedule),
+      :tags => %i[database_operations database_maintenance_reindex_schedule]
     ) do
       enqueue(:database_maintenance_reindex_timer)
     end
@@ -357,7 +375,7 @@ class MiqScheduleWorker::Runner < MiqWorker::Runner
     scheduler.schedule_cron(
       :database_maintenance_vacuum_timer,
       ::Settings.database.maintenance.vacuum_schedule,
-      :tags => %i(database_operations database_maintenance_vacuum_schedule),
+      :tags => %i[database_operations database_maintenance_vacuum_schedule]
     ) do
       enqueue(:database_maintenance_vacuum_timer)
     end
@@ -387,6 +405,7 @@ class MiqScheduleWorker::Runner < MiqWorker::Runner
 
   def schedules_for_ems_metrics_coordinator_role
     return unless schedule_enabled?("ems_metrics_coordinator")
+
     scheduler = scheduler_for(:ems_metrics_coordinator)
 
     # Schedule - Performance Collection
@@ -405,6 +424,7 @@ class MiqScheduleWorker::Runner < MiqWorker::Runner
   def schedules_for_event_role
     # These schedules need to run by the servers with the event role
     return unless schedule_enabled?(:event)
+
     scheduler = scheduler_for(:event)
 
     # Schedule - Purging of event streams
@@ -542,7 +562,8 @@ class MiqScheduleWorker::Runner < MiqWorker::Runner
       begin
         added.each do |r|
           m = "schedules_for_#{r}_role"
-          next unless self.respond_to?(m)
+          next unless respond_to?(m)
+
           _log.info("Adding Schedules for Role=[#{r}]")
           send(m)
         end
@@ -552,6 +573,7 @@ class MiqScheduleWorker::Runner < MiqWorker::Runner
         removed.each do |r|
           rs = r.to_sym
           next unless @schedules.key?(rs)
+
           _log.info("Removing Schedules for Role=[#{r}]")
           @schedules[rs].each do |j|
             # In Rufus::Scheduler Version 1, schedule returns a JobID
@@ -617,7 +639,8 @@ class MiqScheduleWorker::Runner < MiqWorker::Runner
   # @returns Hash<class, Integer> Hash of ems_class => refresh_interval
   def schedule_settings_for_ems_refresh
     ExtManagementSystem.permitted_subclasses.each.with_object({}) do |klass, hash|
-      next unless klass.ems_type
+      next if klass.ems_type.nil? || !klass.supports?(:refresh_ems)
+
       every = ::Settings.ems_refresh[klass.ems_type].try(:refresh_interval) || ::Settings.ems_refresh.refresh_interval
       every = every.respond_to?(:to_i_with_method) ? every.to_i_with_method : every.to_i
       hash[klass] = every unless every == 0

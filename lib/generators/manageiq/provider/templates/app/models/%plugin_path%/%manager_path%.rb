@@ -1,9 +1,5 @@
 class <%= class_name %>::<%= manager_type %> < ManageIQ::Providers::<%= manager_type %>
-  require_nested :MetricsCapture
-  require_nested :MetricsCollectorWorker
-  require_nested :Refresher
-  require_nested :RefreshWorker
-  require_nested :Vm
+  supports :create
 
   # Form schema for creating/editing a provider, it should follow the DDF specification
   # For more information check the DDF documentation at: https://data-driven-forms.org
@@ -18,13 +14,8 @@ class <%= class_name %>::<%= manager_type %> < ManageIQ::Providers::<%= manager_
   # confuse the validation. For example you should not have `x` and `x.y` fields at the
   # same time.
   def self.params_for_create
-    @params_for_create ||= {
+    {
       :fields => [
-        {
-          :component => "text-field",
-          :name      => "provider_region",
-          :label     => _("Provider Region"),
-        },
         {
           :component => 'sub-form',
           :name      => 'endpoints-subform',
@@ -34,27 +25,26 @@ class <%= class_name %>::<%= manager_type %> < ManageIQ::Providers::<%= manager_
               :component              => 'validate-provider-credentials',
               :name                   => 'authentications.default.valid',
               :skipSubmit             => true,
-              :validationDependencies => %w[type provider_region],
+              :validationDependencies => %w[type zone_id provider_region],
               :fields                 => [
                 {
-                  :component  => "select-field",
-                  :name       => "endpoints.default.security_protocol",
-                  :label      => _("Security Protocol"),
-                  :isRequired => true,
-                  :validate   => [{:type => "required-validator"}],
-                  :options    => [
+                  :component    => "select",
+                  :id           => "endpoints.default.verify_ssl",
+                  :name         => "endpoints.default.verify_ssl",
+                  :label        => _("SSL verification"),
+                  :dataType     => "integer",
+                  :isRequired   => true,
+                  :validate     => [{:type => "required"}],
+                  :initialValue => OpenSSL::SSL::VERIFY_PEER,
+                  :options      => [
                     {
-                      :label => _("SSL without validation"),
-                      :value => "ssl-no-validation"
+                      :label => _('Do not verify'),
+                      :value => OpenSSL::SSL::VERIFY_NONE,
                     },
                     {
-                      :label => _("SSL"),
-                      :value => "ssl-with-validation"
+                      :label => _('Verify'),
+                      :value => OpenSSL::SSL::VERIFY_PEER,
                     },
-                    {
-                      :label => _("Non-SSL"),
-                      :value => "non-ssl"
-                    }
                   ]
                 },
                 {
@@ -62,7 +52,7 @@ class <%= class_name %>::<%= manager_type %> < ManageIQ::Providers::<%= manager_
                   :name       => "endpoints.default.hostname",
                   :label      => _("Hostname (or IPv4 or IPv6 address)"),
                   :isRequired => true,
-                  :validate   => [{:type => "required-validator"}],
+                  :validate   => [{:type => "required"}],
                 },
                 {
                   :component    => "text-field",
@@ -71,14 +61,14 @@ class <%= class_name %>::<%= manager_type %> < ManageIQ::Providers::<%= manager_
                   :type         => "number",
                   :initialValue => 12345,
                   :isRequired   => true,
-                  :validate     => [{:type => "required-validator"}],
+                  :validate     => [{:type => "required"}]
                 },
                 {
                   :component  => "text-field",
                   :name       => "authentications.default.userid",
                   :label      => "Username",
                   :isRequired => true,
-                  :validate   => [{:type => "required-validator"}],
+                  :validate   => [{:type => "required"}]
                 },
                 {
                   :component  => "password-field",
@@ -86,7 +76,7 @@ class <%= class_name %>::<%= manager_type %> < ManageIQ::Providers::<%= manager_
                   :label      => "Password",
                   :type       => "password",
                   :isRequired => true,
-                  :validate   => [{:type => "required-validator"}],
+                  :validate   => [{:type => "required"}]
                 },
               ]
             }

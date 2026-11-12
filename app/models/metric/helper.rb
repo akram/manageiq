@@ -90,6 +90,7 @@ module Metric::Helper
   # @return Range<DateTime,DateTime>
   def self.time_range_from_hash(range)
     return range unless range.kind_of?(Hash)
+
     end_time = (range[:end_date] || Time.now.utc).utc
     days = range[:days] || 20
     start_time = (range[:start_date] || (end_time - days.days)).utc
@@ -151,6 +152,7 @@ module Metric::Helper
   def self.get_time_zone(options = nil)
     return TimeProfile::DEFAULT_TZ if options.nil?
     return options[:time_profile].tz if options[:time_profile] && options[:time_profile].tz
+
     options[:tz] || TimeProfile::DEFAULT_TZ
   end
 
@@ -175,15 +177,6 @@ module Metric::Helper
     end_time   = end_offset.nil? ? now : now - end_offset.seconds
 
     start_time..end_time
-  end
-
-  def self.get_time_interval(obj, timestamp)
-    timestamp = Time.parse(timestamp).utc if timestamp.kind_of?(String)
-
-    state = obj.vim_performance_state_for_ts(timestamp)
-    start_time = timestamp - state[:capture_interval]
-
-    start_time..timestamp
   end
 
   def self.latest_metrics(resource_type, since_timestamp, resource_ids = nil)

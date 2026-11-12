@@ -3,7 +3,7 @@
 # processes or load just the classes that are marshaled, which may be far less classes and locations than when
 # we originally wrote this initializer.
 module MarshalAutoloader
-  def load(data)
+  def load(data, _proc = nil)
     super
   rescue ArgumentError => error
     if error.to_s.include?('undefined class')
@@ -17,6 +17,7 @@ module MarshalAutoloader
     raise error
   end
 end
+
 module Marshal
   class << self
     prepend MarshalAutoloader

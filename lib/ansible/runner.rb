@@ -1,6 +1,19 @@
 module Ansible
   class Runner
     class << self
+      def available?
+        return @available if defined?(@available)
+
+        @available = system(runner_env, "which ansible-runner >/dev/null 2>&1")
+      end
+
+      def runner_env
+        @runner_env ||= {
+          "PYTHONPATH" => [venv_python_path, ansible_python_path].compact.join(File::PATH_SEPARATOR),
+          "PATH"       => [venv_bin_path, ENV["PATH"].presence].compact.join(File::PATH_SEPARATOR)
+        }.delete_blanks
+      end
+
       # Runs a playbook via ansible-runner, see: https://ansible-runner.readthedocs.io/en/latest/standalone.html#running-playbooks
       #
       # @param env_vars [Hash] Hash with key/value pairs that will be passed as environment variables to the
@@ -150,6 +163,21 @@ module Ansible
         run_in_queue("run_role", user_id, queue_opts, [env_vars, extra_vars, role_name, kwargs])
       end
 
+      # Executes ansible-runner within the venv.
+      #
+      # Prefer the various run_* methods unless you need to run the ansible-runner command directly.
+      #
+      # @param env [Hash] Hash that will be passed as environment variables to ansible-runner
+      # @param params [Hash,Array] Command line parameters to pass to ansible-runner
+      # @return [AwesomeSpawn::CommandResult] Result of the ansible-runner command
+      def raw_execute(env: {}, params:)
+        env = env.merge(runner_env)
+
+        # puts "#{env.map { |k, v| "#{k}=#{v}" }.join(" ")} #{AwesomeSpawn.build_command_line("ansible-runner", params)}"
+
+        AwesomeSpawn.run("ansible-runner", :env => env, :params => params)
+      end
+
       private
 
       # Run a method on self class, via queue, executed by generic worker
@@ -195,7 +223,7 @@ module Ansible
 
         validate_params!(env_vars, extra_vars, tags, ansible_runner_method, playbook_or_role_args)
 
-        base_dir = Dir.mktmpdir("ansible-runner")
+        base_dir = Pathname.new(Dir.mktmpdir("ansible-runner")).realpath
         debug    = verbosity.to_i >= 5 || env_vars["ANSIBLE_KEEP_REMOTE_FILES"]
 
         cred_command_line, cred_env_vars, cred_extra_vars = credentials_info(credentials, base_dir)
@@ -206,7 +234,7 @@ module Ansible
         end
         command_line_hash.merge!(cred_command_line)
 
-        env_vars_hash   = env_vars.merge(cred_env_vars).merge(runner_env)
+        env_vars_hash   = env_vars.merge(cred_env_vars)
         extra_vars_hash = extra_vars.merge(cred_extra_vars)
 
         create_hosts_file(base_dir, hosts)
@@ -218,9 +246,11 @@ module Ansible
         begin
           fetch_galaxy_roles(playbook_or_role_args)
 
-          result = wait_for(pid_file(base_dir)) do
-            AwesomeSpawn.run("ansible-runner", :env => env_vars_hash, :params => params)
-          end
+          result = if async?(ansible_runner_method)
+                     wait_for(base_dir, "pid") { raw_execute(:env => env_vars_hash, :params => params) }
+                   else
+                     raw_execute(:env => env_vars_hash, :params => params)
+                   end
 
           res = response(base_dir, ansible_runner_method, result, debug)
         ensure
@@ -238,12 +268,19 @@ module Ansible
       #         ansible_runner_method
       def response(base_dir, ansible_runner_method, result, debug)
         if async?(ansible_runner_method)
-          Ansible::Runner::ResponseAsync.new(:base_dir => base_dir, :debug => debug)
+          Ansible::Runner::ResponseAsync.new(
+            :base_dir     => base_dir,
+            :command_line => result.command_line,
+            :debug        => debug
+          )
         else
-          Ansible::Runner::Response.new(:base_dir => base_dir,
-                                        :stdout   => result.output,
-                                        :stderr   => result.error,
-                                        :debug    => debug)
+          Ansible::Runner::Response.new(
+            :base_dir     => base_dir,
+            :command_line => result.command_line,
+            :stdout       => result.output,
+            :stderr       => result.error,
+            :debug        => debug
+          )
         end
       end
 
@@ -302,14 +339,7 @@ module Ansible
         return unless playbook_or_role_args[:playbook]
 
         playbook_dir = File.dirname(playbook_or_role_args[:playbook])
-        Ansible::Content.new(playbook_dir).fetch_galaxy_roles
-      end
-
-      def runner_env
-        {
-          "ANSIBLE_STDOUT_CALLBACK" => "json",
-          "PYTHONPATH"              => python_path
-        }.delete_nils
+        Ansible::Content.new(playbook_dir).fetch_galaxy_roles(runner_env)
       end
 
       def credentials_info(credentials, base_dir)
@@ -357,71 +387,81 @@ module Ansible
         FileUtils.mkdir_p(File.join(base_dir, "env")).first
       end
 
-      def pid_file(base_dir)
-        File.join(base_dir, "pid")
-      end
-
-      def wait_for(path, timeout: 10.seconds)
+      def wait_for(base_dir, target_path, timeout: 10.seconds)
         require "listen"
         require "concurrent"
 
         path_created = Concurrent::Event.new
 
-        listener = Listen.to(File.dirname(path), :only => %r{\A#{File.basename(path)}\z}) do |modified, added, _removed|
-          path_created.set if added.include?(path) || modified.include?(path)
+        listener = Listen.to(base_dir, :only => %r{\A#{target_path}\z}) do |modified, added, _removed|
+          path_created.set if added.include?(base_dir.join(target_path).to_s) || modified.include?(base_dir.join(target_path).to_s)
         end
-
-        thread = Thread.new do
-          listener.start
-        rescue ArgumentError => err
-          # If the main thread raises an exception immediately it is possible
-          # for the ensure block to call `listener.stop` before this thread
-          # begins its execution resulting in an ArgumentError due to the state
-          # being `:stopped`
-          raise unless err.message.include?("cannot start from state :stopped")
-        end
+        listener.start
+        wait_for_listener_start(listener)
 
         begin
           res = yield
-          raise "Timed out waiting for #{path}" unless path_created.wait(timeout)
+          raise "Timed out waiting for #{target_path}" unless path_created.wait(timeout)
         ensure
           listener.stop
-          thread.join
         end
 
         res
       end
 
-      def python_path
-        if python3_modules_path.present?
-          python3_modules_path
-        else
-          python2_modules_path
+      # The listen gem creates an internal thread, @run_thread, which on most target systems
+      # is where the actually listening is done. However, on macOS, @run_thread creates a
+      # second thread, @worker_thread, which does the actual listening. It's possible that
+      # although the listener is started, the @worker_thread hasn't actually started yet.
+      # This leaves a window where the target_path we are waiting on can actually be created
+      # before the @worker_thread is started and we "miss" the creation of the target_path.
+      # This method ensures that we won't move on until that thread is ready, further ensuring
+      # we can't miss the creation of the target_path.
+      def wait_for_listener_start(listener)
+        if RbConfig::CONFIG['host_os'].include?("darwin")
+          listener_adapter = listener.instance_variable_get(:@backend).instance_variable_get(:@adapter)
+          until listener_adapter.instance_variable_get(:@worker_thread)&.alive?
+            sleep(0.01) # yield to other threads to allow them to start
+          end
         end
       end
 
-      PYTHON2_MODULE_PATHS = %w[
-        /var/lib/manageiq/venv/lib/python2.7/site-packages
-      ].freeze
-      def python2_modules_path
-        @python2_modules_path ||= begin
-          determine_existing_python_paths_for(*PYTHON2_MODULE_PATHS).join(File::PATH_SEPARATOR)
-        end
+      VENV_ROOT = "/var/lib/manageiq/venv".freeze
+
+      def venv_python_path
+        return @venv_python_path if defined?(@venv_python_path)
+
+        @venv_python_path = Dir.glob(File.join(VENV_ROOT, "lib/python#{ansible_python_version}/site-packages")).first
       end
 
-      PYTHON3_MODULE_PATHS = %w[
-        /usr/lib64/python3.6/site-packages
-        /var/lib/awx/venv/ansible/lib/python3.6/site-packages
-        /var/lib/manageiq/venv/lib/python3.6/site-packages
-      ].freeze
-      def python3_modules_path
-        @python3_modules_path ||= begin
-          determine_existing_python_paths_for(*PYTHON3_MODULE_PATHS).join(File::PATH_SEPARATOR)
-        end
+      def venv_bin_path
+        return @venv_bin_path if defined?(@venv_bin_path)
+
+        @venv_bin_path = Dir.glob(File.join(VENV_ROOT, "bin")).first
       end
 
-      def determine_existing_python_paths_for(*paths)
-        paths.select { |path| File.exist?(path) }
+      def ansible_python_path
+        python_path_raw(ansible_python_version).presence
+      end
+
+      def ansible_python_version
+        ansible_version_raw.match(/python version = (\d+\.\d+)\./)&.captures&.first
+      end
+
+      # NOTE: This method is ignored by brakeman in the config/brakeman.ignore
+      def python_path_raw(version)
+        return "" if version.blank?
+
+        # This check allows us to ignore the brakeman warning about command line injection
+        raise "python version is not a number: #{version}" unless version.match?(/^\d+\.\d+$/)
+
+        `python#{version} -c 'import site; print(":".join(site.getsitepackages()))'`.chomp
+      end
+
+      # NOTE: This method is ignored by brakeman in the config/brakeman.ignore
+      def ansible_version_raw
+        ansible = venv_bin_path ? File.join(venv_bin_path, "ansible") : "ansible"
+        `#{ansible} --version 2>/dev/null`.chomp
       end
     end
   end

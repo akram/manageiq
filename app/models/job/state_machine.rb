@@ -31,7 +31,7 @@ module Job::StateMachine
       next_state = permitted_transitions[state]
 
       # if current state is not explicitly permitted, is any state (referred by '*') permitted?
-      next_state = permitted_transitions['*'] unless next_state
+      next_state ||= permitted_transitions['*']
       self.state = next_state
     end
     !!next_state
@@ -39,6 +39,10 @@ module Job::StateMachine
 
   def signal_abort(*args)
     signal(:abort, *args)
+  end
+
+  def signal_start(*args)
+    signal(:start, *args)
   end
 
   def signal(signal, *args)
@@ -51,7 +55,7 @@ module Job::StateMachine
     end
   end
 
-  def queue_signal(*args, priority: MiqQueue::NORMAL_PRIORITY, role: nil, deliver_on: nil, server_guid: nil, queue_name: nil)
+  def queue_signal(*args, priority: MiqQueue::NORMAL_PRIORITY, role: nil, deliver_on: nil, server_guid: nil, queue_name: nil, msg_timeout: nil)
     MiqQueue.put(
       :class_name  => self.class.name,
       :method_name => "signal",
@@ -63,7 +67,8 @@ module Job::StateMachine
       :task_id     => guid,
       :args        => args,
       :deliver_on  => deliver_on,
-      :server_guid => server_guid
+      :server_guid => server_guid,
+      :msg_timeout => msg_timeout
     )
   end
 

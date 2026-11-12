@@ -13,15 +13,15 @@
 #
 class UniqueWithinRegionValidator < ActiveModel::EachValidator
   def validate_each(record, attribute, value)
-    return if value.nil? || !record.send("#{attribute}_changed?")
+    return if value.nil? || !record.send(:"#{attribute}_changed?")
 
-    match_case = options.key?(:match_case) ? options[:match_case] : true
+    match_case = options.fetch(:match_case, true)
     record_base_class = record.class.base_class.default_scoped
     matches =
       if match_case
         record_base_class.where(attribute => value)
       else
-        record_base_class.where(record_base_class.arel_attribute(attribute).lower.eq(value.downcase))
+        record_base_class.where(record_base_class.arel_table[attribute.to_sym].lower.eq(value.downcase))
       end
     matches = matches.where(options[:scope] => record.public_send(options[:scope])) if options.key?(:scope)
     unless matches.in_region(record.region_id).where.not(:id => record.id).empty?

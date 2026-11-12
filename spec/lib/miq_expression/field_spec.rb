@@ -69,7 +69,7 @@ RSpec.describe MiqExpression::Field do
 
     it "can parse the associations when there are many present" do
       field = "Vm.host.hardware-id"
-      expect(described_class.parse(field).associations).to eq(%w(host hardware))
+      expect(described_class.parse(field).associations).to eq(%w[host hardware])
     end
 
     it "will return nil when given a field with unsupported syntax" do
@@ -91,11 +91,21 @@ RSpec.describe MiqExpression::Field do
       expect(described_class.parse(tag)).to be_nil
     end
 
+    it "doesn't parse bad text" do
+      expect(MiqExpression::Field.parse("Vm.name")).to be_nil
+    end
+
     it 'parses field with numbers in association' do
       field = 'Vm.win32_services-dependencies'
       expect(described_class.parse(field)).to have_attributes(:model        => Vm,
-                                                              :associations => %w(win32_services),
+                                                              :associations => %w[win32_services],
                                                               :column       => 'dependencies')
+    end
+
+    # This test is here because of the complexity of the MiqExpression::Field::REGEX.
+    # If the regex is removed or greatly simplified, then this test can also be removed.
+    it "avoids catastrophic backtracking" do
+      expect(Benchmark.realtime { MiqExpression::Field.parse("XXXXXXXXXXXXXXXXXXXXXXXXX-") }).to be < 1.second
     end
   end
 
@@ -115,20 +125,6 @@ RSpec.describe MiqExpression::Field do
     it 'returns the correct format for a field' do
       field = MiqExpression::Field.parse('Vm.miq_provision.miq_request-requester_name')
       expect(field.report_column).to eq('miq_provision.miq_request.requester_name')
-    end
-  end
-
-  describe "#parse!" do
-    it "can parse the model name" do
-      field = "Vm-name"
-      expect(described_class.parse(field).model).to be(Vm)
-    end
-
-    # this calls out to parse, so just needed to make sure one value worked
-
-    it "will raise a parse error when given a field with unsupported syntax" do
-      field = "Vm,host+name"
-      expect { described_class.parse!(field) }.to raise_error(MiqExpression::Field::ParseError)
     end
   end
 
@@ -171,7 +167,7 @@ RSpec.describe MiqExpression::Field do
     end
 
     it "returns the reflections of fields with multiple associations" do
-      field = described_class.new(Vm, %w(host hardware), "guest_os")
+      field = described_class.new(Vm, %w[host hardware], "guest_os")
       expect(field.reflections).to match([an_object_having_attributes(:klass => Host),
                                           an_object_having_attributes(:klass => Hardware)])
     end
@@ -187,7 +183,7 @@ RSpec.describe MiqExpression::Field do
     end
 
     it "raises an error if the field has invalid associations" do
-      field = described_class.new(Vm, %w(foo bar), "name")
+      field = described_class.new(Vm, %w[foo bar], "name")
       expect { field.reflections }.to raise_error(/One or more associations are invalid: foo, bar/)
     end
   end
@@ -242,7 +238,6 @@ RSpec.describe MiqExpression::Field do
 
     it "returns the table of the target association with an alias if needed" do
       field = described_class.new(Vm, ["miq_provision_template"], "name")
-      expect(field.arel_table.table_name).to eq(Vm.arel_table.table_name)
       expect(field.arel_table.name).not_to eq(Vm.arel_table.name)
     end
   end
@@ -250,12 +245,12 @@ RSpec.describe MiqExpression::Field do
   describe "#arel_attribute" do
     it "returns the main table when there are no associations" do
       field = described_class.new(Vm, [], "name")
-      expect(field.arel_attribute).to eq(Vm.arel_attribute("name"))
+      expect(field.arel_attribute).to eq(Vm.arel_table[:name])
     end
 
     it "returns the table of the target association without an alias" do
       field = described_class.new(Vm, ["guest_applications"], "name")
-      expect(field.arel_attribute).to eq(GuestApplication.arel_attribute("name"))
+      expect(field.arel_attribute).to eq(GuestApplication.arel_table[:name])
     end
 
     it "returns the table of the target association with an alias if needed" do

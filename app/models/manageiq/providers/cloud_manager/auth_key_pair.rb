@@ -1,8 +1,9 @@
-class ManageIQ::Providers::CloudManager::AuthKeyPair < ::Authentication
+class ManageIQ::Providers::CloudManager::AuthKeyPair < Authentication
   acts_as_miq_taggable
   has_and_belongs_to_many :vms, :join_table => :key_pairs_vms, :foreign_key => :authentication_id
+  virtual_belongs_to :ext_management_system, :uses => :resource
 
-  include_concern 'Operations'
+  include Operations
 
   def self.class_by_ems(ext_management_system)
     ext_management_system&.class_by_ems(:AuthKeyPair)
@@ -33,18 +34,13 @@ class ManageIQ::Providers::CloudManager::AuthKeyPair < ::Authentication
 
   def self.create_key_pair(ems_id, options)
     raise ArgumentError, _("ems cannot be nil") if ems_id.nil?
+
     ext_management_system = ExtManagementSystem.find(ems_id)
-    raise ArgumentError, _("ems cannot be found") if ext_management_system.nil?
 
     klass = ext_management_system.class_by_ems(:AuthKeyPair)
-    # TODO(maufart): add cloud_tenant to database table?
-    created_key_pair = klass.raw_create_key_pair(ext_management_system, options)
-    klass.create(
-      :name        => created_key_pair.name,
-      :fingerprint => created_key_pair.fingerprint,
-      :resource    => ext_management_system,
-      :auth_key    => created_key_pair.private_key
-    )
+
+    key_pair_opts = klass.raw_create_key_pair(ext_management_system, options)
+    klass.create(key_pair_opts.merge(:resource => ext_management_system))
   end
 
   # Delete an auth key pair as a queued task and return the task id. The queue
@@ -71,6 +67,12 @@ class ManageIQ::Providers::CloudManager::AuthKeyPair < ::Authentication
 
   def delete_key_pair
     raw_delete_key_pair
+  end
+
+  # Many Authentications are associated with an ems
+  # using `try` to handle the ones that are not
+  def ext_management_system
+    resource.kind_of?(ExtManagementSystem) ? resource : resource.try(:ext_management_system)
   end
 
   def self.display_name(number = 1)

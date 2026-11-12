@@ -5,20 +5,22 @@ RSpec.describe MiqRequest do
   context "CONSTANTS" do
     it "REQUEST_TYPES" do
       expected_request_types = {
-        :MiqProvisionRequest                      => {:template                        => "VM Provision", :clone_to_vm => "VM Clone", :clone_to_template => "VM Publish"},
-        :MiqProvisionRequestTemplate              => {:template                        => "VM Provision Template"},
-        :MiqProvisionConfiguredSystemRequest      => {:provision_via_foreman           => "#{ui_lookup(:ui_title => 'foreman')} Provision"},
-        :VmReconfigureRequest                     => {:vm_reconfigure                  => "VM Reconfigure"},
-        :VmCloudReconfigureRequest                => {:vm_cloud_reconfigure            => "VM Cloud Reconfigure"},
-        :VmMigrateRequest                         => {:vm_migrate                      => "VM Migrate"},
-        :VmRetireRequest                          => {:vm_retire                       => "VM Retire"},
-        :ServiceRetireRequest                     => {:service_retire                  => "Service Retire"},
-        :OrchestrationStackRetireRequest          => {:orchestration_stack_retire      => "Orchestration Stack Retire"},
-        :AutomationRequest                        => {:automation                      => "Automation"},
-        :ServiceTemplateProvisionRequest          => {:clone_to_service                => "Service Provision"},
-        :ServiceReconfigureRequest                => {:service_reconfigure             => "Service Reconfigure"},
-        :PhysicalServerProvisionRequest           => {:provision_physical_server       => "Physical Server Provision"},
-        :PhysicalServerFirmwareUpdateRequest      => {:physical_server_firmware_update => "Physical Server Firmware Update"},
+        :MiqProvisionRequest                            => {:template                         => "VM Provision", :clone_to_vm => "VM Clone", :clone_to_template => "VM Publish"},
+        :MiqProvisionRequestTemplate                    => {:template                         => "VM Provision Template"},
+        :MiqProvisionConfiguredSystemRequest            => {:provision_via_foreman            => "#{ui_lookup(:ui_title => 'foreman')} Provision"},
+        :VmReconfigureRequest                           => {:vm_reconfigure                   => "VM Reconfigure"},
+        :VmCloudReconfigureRequest                      => {:vm_cloud_reconfigure             => "VM Cloud Reconfigure"},
+        :VmMigrateRequest                               => {:vm_migrate                       => "VM Migrate"},
+        :VmRetireRequest                                => {:vm_retire                        => "VM Retire"},
+        :ServiceRetireRequest                           => {:service_retire                   => "Service Retire"},
+        :OrchestrationStackRetireRequest                => {:orchestration_stack_retire       => "Orchestration Stack Retire"},
+        :AutomationRequest                              => {:automation                       => "Automation"},
+        :MiqProvisionConfigurationScriptRequest         => {:provision_via_automation_manager => "Automation Provider Provision"},
+        :MiqProvisionConfigurationScriptRequestTemplate => {:provision_via_automation_manager => "Configuration Script Template"},
+        :ServiceTemplateProvisionRequest                => {:clone_to_service                 => "Service Provision"},
+        :ServiceReconfigureRequest                      => {:service_reconfigure              => "Service Reconfigure"},
+        :PhysicalServerProvisionRequest                 => {:provision_physical_server        => "Physical Server Provision"},
+        :PhysicalServerFirmwareUpdateRequest            => {:physical_server_firmware_update  => "Physical Server Firmware Update"},
       }
 
       expect(described_class::REQUEST_TYPES).to eq(expected_request_types)
@@ -160,12 +162,12 @@ RSpec.describe MiqRequest do
           end
 
           it "approval_state denied" do
-            provision_request.approval_state  = 'denied'
+            provision_request.approval_state = 'denied'
             expect(provision_request.request_status).to eq('Error')
           end
 
           it "approval_state pending_approval" do
-            provision_request.approval_state  = 'pending_approval'
+            provision_request.approval_state = 'pending_approval'
             expect(provision_request.request_status).to eq('Unknown')
           end
         end
@@ -197,7 +199,7 @@ RSpec.describe MiqRequest do
         allow(MiqServer).to receive_messages(:my_zone => "default")
 
         expect(request).to receive(:set_description)
-        expect(request).to receive(:log_request_success)
+        expect(request).to receive(:audit_request_success)
         expect(request).to receive(:call_automate_event_queue).with("request_created")
         expect(request).to receive(:call_automate_event_queue).with("request_approved")
         expect(request).to receive(:execute)
@@ -263,7 +265,7 @@ RSpec.describe MiqRequest do
         end
 
         describe ".with_reason_like" do
-          let(:reason) { %w(abcd abcde cde) }
+          let(:reason) { %w[abcd abcde cde] }
           subject { described_class.with_reason_like(pattern).count }
 
           before { request.miq_approvals = approvals }
@@ -453,7 +455,11 @@ RSpec.describe MiqRequest do
     let(:ems)      { FactoryBot.create(:ems_vmware_with_authentication) }
     let(:template) { FactoryBot.create(:template_vmware, :ext_management_system => ems) }
     let(:request)  do
-      FactoryBot.create(:miq_provision_request, :requester => fred, :options => @options, :source => template)
+      options = {
+        :src_vm_id     => template.id,
+        :number_of_vms => 3,
+      }
+      FactoryBot.create(:miq_provision_request, :requester => fred, :options => options, :source => template)
     end
 
     before do
@@ -461,11 +467,6 @@ RSpec.describe MiqRequest do
       ae_workspace = double("ae_workspace")
       allow(ae_workspace).to receive(:root).and_return("test_vm")
       allow(MiqAeEngine).to receive(:resolve_automation_object).and_return(ae_workspace)
-
-      @options = {
-        :src_vm_id     => template.id,
-        :number_of_vms => 3,
-      }
     end
 
     it '1 task' do
@@ -612,6 +613,145 @@ RSpec.describe MiqRequest do
       FactoryBot.create(:vm_migrate_request, :requester => FactoryBot.create(:user))
       FactoryBot.create(:vm_migrate_request, :requester => FactoryBot.create(:user), :id => regional_id + 1)
       expect(MiqRequest.user_owned(regional_user)).to match_array([request, regional_request])
+    end
+  end
+
+  describe ".request_log" do
+    describe ":info" do
+      it "with a resource_id" do
+        expect($log).to receive(:info).with("foo")
+
+        described_class.request_log(:info, "foo", :resource_id => 123)
+
+        expect(RequestLog.count).to eq(1)
+        log = RequestLog.first
+        expect(log.message).to     eq("foo")
+        expect(log.severity).to    eq("INFO")
+        expect(log.resource_id).to eq(123)
+      end
+
+      it "without a resource_id" do
+        expect($log).to receive(:info).with("foo")
+
+        described_class.request_log(:info, "foo")
+
+        expect(RequestLog.count).to eq(0)
+      end
+    end
+
+    describe ":error" do
+      it "with a resource_id" do
+        expect($log).to receive(:error).with("foo")
+
+        described_class.request_log(:error, "foo", :resource_id => 123)
+
+        expect(RequestLog.count).to eq(1)
+        log = RequestLog.first
+        expect(log.message).to     eq("foo")
+        expect(log.severity).to    eq("ERROR")
+        expect(log.resource_id).to eq(123)
+      end
+
+      it "without a resource_id" do
+        expect($log).to receive(:error).with("foo")
+
+        described_class.request_log(:error, "foo")
+
+        expect(RequestLog.count).to eq(0)
+      end
+    end
+
+    describe ":warn" do
+      it "with a resource_id" do
+        expect($log).to receive(:warn).with("foo")
+
+        described_class.request_log(:warn, "foo", :resource_id => 123)
+
+        expect(RequestLog.count).to eq(1)
+        log = RequestLog.first
+        expect(log.message).to     eq("foo")
+        expect(log.severity).to    eq("WARN")
+        expect(log.resource_id).to eq(123)
+      end
+
+      it "without a resource_id" do
+        expect($log).to receive(:warn).with("foo")
+
+        described_class.request_log(:warn, "foo")
+
+        expect(RequestLog.count).to eq(0)
+      end
+    end
+
+    describe ":fatal" do
+      it "with a resource_id" do
+        expect($log).to receive(:fatal).with("foo")
+
+        described_class.request_log(:fatal, "foo", :resource_id => 123)
+
+        expect(RequestLog.count).to eq(1)
+        log = RequestLog.first
+        expect(log.message).to     eq("foo")
+        expect(log.severity).to    eq("FATAL")
+        expect(log.resource_id).to eq(123)
+      end
+
+      it "without a resource_id" do
+        expect($log).to receive(:fatal).with("foo")
+
+        described_class.request_log(:fatal, "foo")
+
+        expect(RequestLog.count).to eq(0)
+      end
+    end
+
+    describe ":debug" do
+      context "when the level doesn't include DEBUG" do
+        it "with a resource_id" do
+          expect($log).to_not receive(:debug)
+
+          described_class.request_log(:debug, "foo", :resource_id => 123)
+
+          expect(RequestLog.count).to eq(0)
+        end
+
+        it "without a resource_id" do
+          expect($log).to_not receive(:debug)
+
+          described_class.request_log(:debug, "foo")
+
+          expect(RequestLog.count).to eq(0)
+        end
+      end
+
+      context "when the level includes DEBUG" do
+        around do |example|
+          old_level, $log.level = $log.level, Logger::DEBUG
+          example.run
+        ensure
+          $log.level = old_level
+        end
+
+        it "with a resource_id" do
+          expect($log).to receive(:debug).with("foo")
+
+          described_class.request_log(:debug, "foo", :resource_id => 123)
+
+          expect(RequestLog.count).to eq(1)
+          log = RequestLog.first
+          expect(log.message).to     eq("foo")
+          expect(log.severity).to    eq("DEBUG")
+          expect(log.resource_id).to eq(123)
+        end
+
+        it "without a resource_id" do
+          expect($log).to receive(:debug).with("foo")
+
+          described_class.request_log(:debug, "foo")
+
+          expect(RequestLog.count).to eq(0)
+        end
+      end
     end
   end
 end

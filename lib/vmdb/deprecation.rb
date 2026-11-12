@@ -1,11 +1,11 @@
 module Vmdb
   class Deprecation
     def self.instance
-      @instance ||= ActiveSupport::Deprecation.new("O-release", "ManageIQ").tap { |d| d.behavior = default_behavior }
+      @instance ||= ActiveSupport::Deprecation.new("V-release", "ManageIQ").tap { |d| d.behavior = default_behavior }
     end
 
-    def self.method_missing(method_name, *args, &block)
-      instance.respond_to?(method_name) ? instance.send(method_name, *args, &block) : super
+    def self.method_missing(method_name, ...)
+      instance.respond_to?(method_name) ? instance.send(method_name, ...) : super
     end
 
     def self.respond_to_missing?(method, _include_private = false)
@@ -13,6 +13,7 @@ module Vmdb
     end
 
     class << self
+      alias_method :deprecator, :instance
       delegate :silence, :warn, :to => :instance
     end
 
@@ -28,6 +29,7 @@ module Vmdb
 
     def self.proc_for_default_log
       return unless default_log
+
       proc do |message, callstack|
         default_log.warn(message)
         default_log.debug { callstack.join("\n  ") }

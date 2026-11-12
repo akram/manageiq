@@ -29,7 +29,7 @@ RSpec.describe MiqWorker do
     end
 
     before do
-      active_roles = %w(foo bar).map { |rn| FactoryBot.create(:server_role, :name => rn) }
+      active_roles = %w[foo bar].map { |rn| FactoryBot.create(:server_role, :name => rn) }
       @server = EvmSpecHelper.local_miq_server(:active_roles => active_roles)
     end
 
@@ -77,7 +77,7 @@ RSpec.describe MiqWorker do
 
       it "that is a subset of server roles" do
         check_has_required_role(["foo"], true)
-        check_has_required_role(%w(bah foo), true)
+        check_has_required_role(%w[bah foo], true)
       end
 
       it "that is not a subset of server roles" do
@@ -131,6 +131,30 @@ RSpec.describe MiqWorker do
     end
   end
 
+  describe ".rails_worker?" do
+    before do
+      @rails_worker = described_class.rails_worker
+    end
+
+    after do
+      described_class.rails_worker = @rails_worker
+    end
+
+    it "defaults to true" do
+      expect(described_class.rails_worker?).to be_truthy
+    end
+
+    it "can be set to false" do
+      described_class.rails_worker = false
+      expect(described_class.rails_worker?).to be_falsey
+    end
+
+    it "can be set to a lambda" do
+      described_class.rails_worker = -> { false }
+      expect(described_class.rails_worker?).to be_falsey
+    end
+  end
+
   describe ".worker_settings" do
     let(:settings) do
       {
@@ -153,7 +177,7 @@ RSpec.describe MiqWorker do
     end
 
     before do
-      EvmSpecHelper.create_guid_miq_server_zone
+      EvmSpecHelper.local_miq_server
       stub_settings(settings)
     end
 
@@ -251,6 +275,35 @@ RSpec.describe MiqWorker do
                .worker_settings(:config => settings)[:memory_threshold]
       expect(actual).to eq(1.terabyte)
     end
+
+    context "with encrypted values" do
+      let(:settings) do
+        {
+          :workers => {
+            :worker_base => {
+              :defaults          => {:memory_threshold => "100.megabytes"},
+              :queue_worker_base => {
+                :defaults           => {:memory_threshold => "300.megabytes"},
+                :ems_refresh_worker => {
+                  :defaults                  => {:memory_threshold => "500.megabytes"},
+                  :ems_refresh_worker_amazon => {
+                    :memory_threshold => "700.megabytes",
+                    :proxy_password   => ManageIQ::Password.encrypt("password")
+                  }
+                }
+              }
+            }
+          },
+          :ems     => {:ems_amazon => {}}
+        }
+      end
+
+      it "decrypts values" do
+        expect(
+          ManageIQ::Providers::Amazon::CloudManager::RefreshWorker.worker_settings[:proxy_password]
+        ).to eq("password")
+      end
+    end
   end
 
   context "with two servers" do
@@ -341,13 +394,13 @@ RSpec.describe MiqWorker do
 
     it "include parent entries" do
       expect(capu_worker.config_settings_path).to eq(
-        %i(workers worker_base queue_worker_base ems_metrics_collector_worker ems_metrics_collector_worker_amazon)
+        %i[workers worker_base queue_worker_base ems_metrics_collector_worker ems_metrics_collector_worker_amazon]
       )
     end
 
     it "works for high level entries" do
       expect(MiqEmsMetricsCollectorWorker.config_settings_path).to eq(
-        %i(workers worker_base queue_worker_base ems_metrics_collector_worker)
+        %i[workers worker_base queue_worker_base ems_metrics_collector_worker]
       )
     end
   end
@@ -364,7 +417,7 @@ RSpec.describe MiqWorker do
 
     context "#destroy" do
       context "where it has messages it's handling" do
-        before { EvmSpecHelper.local_guid_miq_server_zone }
+        before { EvmSpecHelper.local_miq_server }
         let(:miq_task) do
           queue_opts = {:class_name => "MiqServer", :method_name => "my_server", :args => []}
           task_opts  = {:name => "Thing1", :userid => "admin"}
@@ -380,7 +433,7 @@ RSpec.describe MiqWorker do
 
           expect(miq_task.reload.active?).to be_falsey
           expect(miq_task.status_error?).to be_truthy
-          expect { message_linked_to_task.reload }.to raise_error(ActiveRecord::RecordNotFound)
+          expect(message_linked_to_task).to be_deleted
         end
 
         it "let's other handlers pick up tasks and messages not yet started" do
@@ -426,8 +479,8 @@ RSpec.describe MiqWorker do
     end
 
     describe "#kill_async" do
-      let!(:remote_server) { EvmSpecHelper.remote_guid_miq_server_zone[1] }
-      let!(:local_server)  { EvmSpecHelper.local_guid_miq_server_zone[1] }
+      let!(:remote_server) { EvmSpecHelper.remote_miq_server }
+      let!(:local_server)  { EvmSpecHelper.local_miq_server }
 
       it "queues local worker to local server" do
         worker = FactoryBot.create(:miq_worker, :miq_server => local_server)

@@ -1,9 +1,10 @@
 FactoryBot.define do
   factory :storage do
+    store_type { "NTFS" }
     sequence(:name) { |n| "storage_#{seq_padded_for_sorting(n)}" }
   end
 
-  factory :storage_vmware, :parent => :storage do
+  factory :storage_vmware, :parent => :storage, :class => "ManageIQ::Providers::Vmware::InfraManager::Storage" do
     store_type { "VMFS" }
     sequence(:ems_ref) { |n| "datastore-#{n}" }
   end

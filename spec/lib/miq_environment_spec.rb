@@ -1,16 +1,18 @@
 RSpec.describe MiqEnvironment do
   context "with linux platform" do
-    before do
-      @old_impl = Sys::Platform::IMPL
+    around do |example|
+      old_impl = Sys::Platform::IMPL
       silence_warnings { Sys::Platform::IMPL = :linux }
-    end
-
-    after do
-      silence_warnings { Sys::Platform::IMPL = @old_impl } if @old_impl
+      begin
+        example.run
+      ensure
+        silence_warnings { Sys::Platform::IMPL = old_impl }
+      end
     end
 
     context "Host Info" do
       example "fully_qualified_domain_name" do
+        skip if RUBY_PLATFORM.include?("darwin")
         expect(described_class.fully_qualified_domain_name).to eq(`hostname -f`.chomp)
       end
 
@@ -29,13 +31,6 @@ RSpec.describe MiqEnvironment do
     end
 
     context "Command" do
-      context ".supports_memcached?" do
-        it "should run once and cache the result" do
-          expect(MiqEnvironment::Command).to receive(:is_linux?).once.and_return(false)
-          assert_same_result_every_time(:supports_memcached?, false)
-        end
-      end
-
       context ".supports_nohup_and_backgrounding?" do
         it "should run once and cache the result" do
           expect(MiqEnvironment::Command).to receive(:is_appliance?).once.and_return(false)
@@ -61,12 +56,16 @@ RSpec.describe MiqEnvironment do
       end
 
       context "production build questions" do
+        let(:token_file) { "/run/secrets/kubernetes.io/serviceaccount/token" }
+        let(:ca_file)    { "/run/secrets/kubernetes.io/serviceaccount/ca.crt" }
+
         def container_conditions
           stub_const("ENV", ENV.to_h.merge("CONTAINER" => "true"))
         end
 
         def podified_conditions
-          expect(ContainerOrchestrator).to receive(:available?).and_return(true)
+          allow(File).to receive(:exist?).with(token_file).and_return(true)
+          allow(File).to receive(:exist?).with(ca_file).and_return(true)
           container_conditions
         end
 

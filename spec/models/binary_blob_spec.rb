@@ -34,7 +34,7 @@ RSpec.describe BinaryBlob do
 
     it '#binary= with more data than the max parts size' do
       data = "test log data"
-      data *= ((BinaryBlobPart.default_part_size) / data.length * 2)
+      data *= (BinaryBlobPart.default_part_size / data.length * 2)
       @blob.binary = data.dup # binary= destroys the source data, so dup it
       expect(@blob.binary.length).to eq(data.length)
     end
@@ -79,6 +79,15 @@ RSpec.describe BinaryBlob do
     it "can store and load data as YAML" do
       bb = FactoryBot.build(:binary_blob)
       data = "foo"
+
+      bb.store_data("YAML", data)
+
+      expect(bb.data).to eq(data)
+    end
+
+    it "can store and load data as YAML with unpermitted classes" do
+      bb = FactoryBot.build(:binary_blob)
+      data = {:a => User}
 
       bb.store_data("YAML", data)
 

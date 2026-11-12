@@ -1,6 +1,6 @@
 RSpec.describe Metric::CiMixin::Capture do
   require ManageIQ::Providers::Openstack::Engine.root.join("spec/tools/openstack_data/openstack_data_test_helper")
-  let(:zone) { EvmSpecHelper.create_guid_miq_server_zone[2] }
+  let(:zone) { EvmSpecHelper.local_miq_server.zone }
   let(:mock_meter_list) { OpenstackMeterListData.new }
   let(:mock_stats_data) { OpenstackMetricStatsData.new }
   let(:metering) do
@@ -12,6 +12,7 @@ RSpec.describe Metric::CiMixin::Capture do
   let(:vm) { FactoryBot.create(:vm_perf_openstack, :ext_management_system => ems_openstack) }
 
   before do
+    Zone.seed
     allow(ems_openstack).to receive(:connect).with(:service => "Metering").and_return(metering)
   end
 
@@ -122,16 +123,40 @@ RSpec.describe Metric::CiMixin::Capture do
         end
 
         context "2 collection periods total, there is data hole between periods" do
-          it "verifies that hole in the data is logged, corrupted data is logged and no other warnings are logged" do
-            # Hole in the data is logged
-            expect($log).to receive(:warn).with(/expected to get data as of/).exactly(:once)
-            # Corrupted data is logged NOTE: This is emitted from the provider
-            expect($log).to receive(:warn).with(/Distance of the multiple streams of data is invalid/).exactly(:once)
-            # No to other warnings should be logged
-            expect($log).not_to receive(:warn)
+          context "with syndication disabled" do
+            before { stub_settings_merge(:performance => {:syndicate_metrics => false}) }
 
-            # sending no collection period overlap will cause hole in the data
-            capture_data('2013-08-28T11:56:00Z', nil)
+            it "verifies that hole in the data is logged, corrupted data is logged and no other warnings are logged" do
+              # Hole in the data is logged
+              expect($log).to receive(:warn).with(/expected to get data as of/).exactly(:once)
+              # Corrupted data is logged NOTE: This is emitted from the provider
+              expect($log).to receive(:warn).with(/Distance of the multiple streams of data is invalid/).exactly(:once)
+              # No to other warnings should be logged
+              expect($log).not_to receive(:warn)
+
+              # sending no collection period overlap will cause hole in the data
+              capture_data('2013-08-28T11:56:00Z', nil)
+            end
+          end
+
+          context "with syndication enabled" do
+            before { stub_settings_merge(:performance => {:syndicate_metrics => true}, :messaging => {:type => "kafka"}) }
+
+            it "verifies that hole in the data is logged, corrupted data is logged and no other warnings are logged" do
+              # Hole in the data is logged
+              expect($log).to receive(:warn).with(/expected to get data as of/).exactly(:once)
+              # Corrupted data is logged NOTE: This is emitted from the provider
+              expect($log).to receive(:warn).with(/Distance of the multiple streams of data is invalid/).exactly(:once)
+              # No to other warnings should be logged
+              expect($log).not_to receive(:warn)
+
+              messaging_client = double("ManageIQ::Messaging")
+              expect(messaging_client).to receive(:publish_topic).at_least(:once)
+              expect(MiqQueue).to receive(:messaging_client).with('metrics_capture').and_return(messaging_client).at_least(:once)
+
+              # sending no collection period overlap will cause hole in the data
+              capture_data('2013-08-28T11:56:00Z', nil)
+            end
           end
         end
 
@@ -160,6 +185,15 @@ RSpec.describe Metric::CiMixin::Capture do
             expected_timestamps.each do |timestamp|
               expect(@metrics_by_ts[timestamp.iso8601].try(:cpu_usage_rate_average)).not_to eq nil
             end
+          end
+        end
+
+        context "with a paused EMS" do
+          let(:ems_openstack) { FactoryBot.create(:ems_openstack, :zone => Zone.maintenance_zone, :enabled => false) }
+
+          it "doesn't run just_perf_capture" do
+            expect(vm).not_to receive(:just_perf_capture)
+            vm.perf_capture_realtime
           end
         end
       end

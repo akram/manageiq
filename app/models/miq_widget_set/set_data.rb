@@ -1,7 +1,7 @@
 module MiqWidgetSet::SetData
   extend ActiveSupport::Concern
 
-  SET_DATA_COLS = %i[col1 col2 col3].freeze
+  SET_DATA_COLS = %i[col1 col2].freeze
 
   included do
     validate :set_data do
@@ -19,10 +19,14 @@ module MiqWidgetSet::SetData
       MiqWidget.where(:id => widget_ids)
     end
 
+    def has_widget_id_member?(widget_id)
+      widget_ids.include?(widget_id)
+    end
+
     private
 
     def init_set_data
-      old_set_data = self.set_data.to_h.symbolize_keys
+      old_set_data = set_data.to_h.symbolize_keys
       new_set_data = {}
 
       SET_DATA_COLS.each do |col_key|

@@ -1,17 +1,18 @@
 require 'io/wait'
 
 class MiqWorker < ApplicationRecord
-  include_concern 'ContainerCommon'
-  include_concern 'SystemdCommon'
+  include ContainerCommon
+  include SystemdCommon
   include UuidMixin
 
-  before_destroy :error_out_tasks_with_active_queue_message, :log_destroy_of_worker_messages
+  after_initialize :set_system_uid
+  before_destroy   :error_out_tasks_with_active_queue_message, :log_destroy_of_worker_messages
 
   belongs_to :miq_server
   has_many   :messages,           :as => :handler, :class_name => 'MiqQueue'
   has_many   :active_messages,    -> { where(["state = ?", "dequeue"]) }, :as => :handler, :class_name => 'MiqQueue'
   has_many   :ready_messages,     -> { where(["state = ?", "ready"]) }, :as => :handler, :class_name => 'MiqQueue'
-  has_many   :processed_messages, -> { where(["state != ?", "ready"]) }, :as => :handler, :class_name => 'MiqQueue', :dependent => :destroy
+  has_many   :processed_messages, -> { where.not(state: "ready") }, :as => :handler, :class_name => 'MiqQueue', :dependent => :destroy
 
   virtual_column :friendly_name, :type => :string
   virtual_column :uri_or_queue_name, :type => :string
@@ -35,8 +36,8 @@ class MiqWorker < ApplicationRecord
   STATUSES_CURRENT  = [STATUS_STARTED, STATUS_READY, STATUS_WORKING]
   STATUSES_STOPPED  = [STATUS_STOPPED, STATUS_KILLED, STATUS_ABORTED]
   STATUSES_CURRENT_OR_STARTING = STATUSES_CURRENT + STATUSES_STARTING
-  STATUSES_ALIVE    = STATUSES_CURRENT_OR_STARTING + [STATUS_STOPPING]
-  PROCESS_INFO_FIELDS = %i(priority memory_usage percent_memory percent_cpu memory_size cpu_time proportional_set_size unique_set_size)
+  STATUSES_ALIVE = STATUSES_CURRENT_OR_STARTING + [STATUS_STOPPING]
+  PROCESS_INFO_FIELDS = %i[priority memory_usage percent_memory percent_cpu memory_size cpu_time proportional_set_size unique_set_size]
 
   PROCESS_TITLE_PREFIX = "MIQ:".freeze
 
@@ -60,6 +61,7 @@ class MiqWorker < ApplicationRecord
     return 0 unless has_required_role?
     return @workers.call if @workers.kind_of?(Proc)
     return @workers unless @workers.nil?
+
     workers_configured_count
   end
 
@@ -83,12 +85,24 @@ class MiqWorker < ApplicationRecord
     leaf_subclasses | descendants.select { |d| d.try(:acts_as_sti_leaf_class?) }
   end
 
-  class_attribute :default_queue_name, :required_roles, :maximum_workers_count, :include_stopping_workers_on_synchronize
+  class_attribute :default_queue_name, :required_roles, :maximum_workers_count, :include_stopping_workers_on_synchronize, :worker_settings_paths, :rails_worker
   self.include_stopping_workers_on_synchronize = false
   self.required_roles = []
+  self.worker_settings_paths = []
+  self.rails_worker = true
+
+  def self.rails_worker?
+    worker = rails_worker
+    return instance_exec(&worker) if worker.kind_of?(Proc)
+    return worker unless worker.nil?
+
+    true
+  end
+  delegate :rails_worker?, :to => :class
 
   def self.server_scope
     return current_scope if current_scope && current_scope.where_values_hash.include?('miq_server_id')
+
     where(:miq_server_id => MiqServer.my_server&.id)
   end
 
@@ -103,6 +117,18 @@ class MiqWorker < ApplicationRecord
 
   def self.find_starting
     server_scope.where(:status => STATUSES_STARTING)
+  end
+
+  def self.find_stopping
+    server_scope.where(:status => STATUS_STOPPING)
+  end
+
+  def self.find_all_starting
+    find_starting.where(:type => MiqWorkerType.worker_class_names)
+  end
+
+  def self.find_all_stopping
+    find_stopping.where(:type => MiqWorkerType.worker_class_names)
   end
 
   def self.find_current_or_starting
@@ -198,31 +224,39 @@ class MiqWorker < ApplicationRecord
       classes.each do |c|
         section = section[c]
         raise _("Missing config section %{section_name}") % {:section_name => c} if section.nil?
+
         defaults = section[:defaults]
         unless defaults.nil?
-          defaults.delete_if {|k, v| v == Vmdb::Settings::RESET_VALUE }
+          defaults.delete_if { |_k, v| v == Vmdb::Settings::RESET_VALUE }
           settings.merge!(defaults)
         end
       end
 
-      section.delete_if {|k, v| v == Vmdb::Settings::RESET_VALUE }
+      section.delete_if { |_k, v| v == Vmdb::Settings::RESET_VALUE }
       settings.merge!(section)
+      normalize_settings!(settings) unless raw == true
+    end
 
-      # If not specified, provide the worker_settings cleaned up in fixnums, etc. instead of 1.seconds, 10.megabytes
-      # Clean up the configuration values in a format like "30.seconds"
-      unless raw == true
-        settings.keys.each do |k|
-          if settings[k].kind_of?(String)
-            if settings[k].number_with_method?
-              settings[k] = settings[k].to_i_with_method
-            elsif settings[k] =~ /\A\d+(.\d+)?\z/ # case where int/float saved as string
-              settings[k] = settings[k].to_i
-            end
-          end
+    settings
+  end
+
+  # If not specified, provide the worker_settings cleaned up in fixnums, etc. instead of 1.seconds, 10.megabytes
+  # and decrypt any values which are encrypted with ManageIQ::Password.
+  def self.normalize_settings!(settings, recurse: false)
+    settings.each_key do |k|
+      v = settings[k]
+      if v.kind_of?(Hash) && recurse
+        normalize_settings!(v, :recurse => true)
+      elsif v.kind_of?(String)
+        if v.number_with_method?
+          settings[k] = v.to_i_with_method
+        elsif v.match?(/\A\d+(.\d+)?\z/) # case where int/float saved as string
+          settings[k] = v.to_i
+        elsif ManageIQ::Password.encrypted?(v)
+          settings[k] = ManageIQ::Password.decrypt(v)
         end
       end
     end
-    settings
   end
 
   def worker_settings(options = {})
@@ -237,8 +271,13 @@ class MiqWorker < ApplicationRecord
     fetch_worker_settings_from_server(MiqServer.my_server, options)
   end
 
+  def self.reload_worker_settings
+    # By default worker settings are reloaded periodically by the worker runner
+  end
+
   def self.start_workers
-    return unless self.has_required_role?
+    return unless has_required_role?
+
     workers.times { start_worker }
   end
 
@@ -326,15 +365,15 @@ class MiqWorker < ApplicationRecord
     cmd = "nice -n #{nice_increment} #{cmd}" if ENV["APPLIANCE"]
 
     options = {:guid => guid, :heartbeat => nil}
-    if ems_id
-      options[:ems_id] = ems_id.kind_of?(Array) ? ems_id.join(",") : ems_id
-    end
+    options[:ems_id] = ems_id if ems_id
+
     "#{AwesomeSpawn::CommandLineBuilder.new.build(cmd, options)} #{name}"
   end
 
   def self.runner_script
     script = ManageIQ.root.join("lib/workers/bin/run_single_worker.rb")
     raise "script not found: #{script}" unless File.exist?(script)
+
     script
   end
 
@@ -342,11 +381,17 @@ class MiqWorker < ApplicationRecord
     self.class.build_command_line(*worker_options.values_at(:guid, :ems_id))
   end
 
+  def environment_variables
+    {
+      "BUNDLER_GROUPS" => self.class.bundler_groups.join(",")
+    }
+  end
+
   def start_runner_via_spawn
     pid = Kernel.spawn(
-      {"BUNDLER_GROUPS" => self.class.bundler_groups.join(",")},
+      environment_variables,
       command_line,
-      [:out, :err] => [Rails.root.join("log", "evm.log"), "a"]
+      [:out, :err] => [Rails.root.join("log/evm.log"), "a"]
     )
     Process.detach(pid)
     pid
@@ -402,6 +447,7 @@ class MiqWorker < ApplicationRecord
         Process.kill(9, pid)
         loop do
           break unless is_alive?
+
           sleep(0.01)
         end
       rescue Errno::ESRCH
@@ -422,6 +468,10 @@ class MiqWorker < ApplicationRecord
 
   def is_stopped?
     STATUSES_STOPPED.include?(status)
+  end
+
+  def current_or_starting?
+    STATUSES_CURRENT_OR_STARTING.include?(status)
   end
 
   def started?
@@ -453,6 +503,10 @@ class MiqWorker < ApplicationRecord
       _log.warn("Message id: [#{m.id}] Setting state to 'error'")
       m.delivered_in_error('Clean Active Messages')
     end
+  end
+
+  private def set_system_uid
+    self.system_uid = unit_name if systemd_worker?
   end
 
   private def error_out_tasks_with_active_queue_message
@@ -522,8 +576,8 @@ class MiqWorker < ApplicationRecord
 
   def self.minimal_class_name
     abbreviated_class_name
-      .sub(/Miq/, "")
-      .sub(/Worker/, "")
+      .sub("Miq", "")
+      .sub("Worker", "")
   end
 
   def minimal_class_name

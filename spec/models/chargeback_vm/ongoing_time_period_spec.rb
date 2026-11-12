@@ -35,7 +35,7 @@ RSpec.describe ChargebackVm do
                                               :parent_ems_cluster_id     => ems_cluster.id,
                                               :parent_ems_id             => ems.id,
                                               :parent_storage_id         => storage.id,
-                                              :resource_name             => vm.name,
+                                              :resource_name             => vm.name
                                              )
     end
     vm
@@ -56,15 +56,14 @@ RSpec.describe ChargebackVm do
                              :single_value => true, :show => true)
     c = FactoryBot.create(:classification, :name => 'prod', :description => 'Production', :parent_id => cat.id)
     chargeback_rate = FactoryBot.create(:chargeback_rate, :detail_params => detail_params)
-    temp = { :cb_rate => chargeback_rate, :tag => [c, 'vm'] }
+    temp = {:cb_rate => chargeback_rate, :tag => [c, 'vm']}
     ChargebackRate.set_assignments(:compute, [temp])
   end
 
   before do
-    MiqRegion.seed
     ChargebackRateDetailMeasure.seed
     ChargeableField.seed
-    EvmSpecHelper.create_guid_miq_server_zone
+    EvmSpecHelper.local_miq_server
     Timecop.travel(report_run_time)
     vm
   end

@@ -3,9 +3,11 @@ module Metric::Rollup
                  [:stat_container_group_create_rate,
                   :stat_container_group_delete_rate,
                   :stat_container_image_registration_rate]
-  STORAGE_COLS = Metric.columns_hash.collect { |c, _h| c.to_sym if c.starts_with?("derived_storage_") }.compact
+  STORAGE_COLS = Metric.columns_hash.collect { |c, _h| c.to_sym if c.starts_with?("derived_storage_") }.compact.freeze
 
-  NON_STORAGE_ROLLUP_COLS = (ROLLUP_COLS - STORAGE_COLS)
+  NON_STORAGE_ROLLUP_COLS = (ROLLUP_COLS - STORAGE_COLS).freeze
+  CONTAINER_ROLLUP_COLS   = [:cpu_usage_rate_average, :derived_vm_numvcpus, :derived_memory_used, :net_usage_rate_average].freeze
+  VM_ROLLUP_COLS          = [:cpu_usage_rate_average, :derived_memory_used, :disk_usage_rate_average, :net_usage_rate_average].freeze
 
   AGGREGATE_COLS = {
     :MiqEnterprise_miq_regions            => ROLLUP_COLS,
@@ -39,42 +41,12 @@ module Metric::Rollup
       :derived_vm_numvcpus,
       :derived_vm_used_disk_storage,
     ],
-    :ContainerImage_containers => [
-      :cpu_usage_rate_average,
-      :derived_vm_numvcpus,
-      :derived_memory_used,
-      :net_usage_rate_average
-    ],
-    :ContainerProject_all_container_groups => [
-      :cpu_usage_rate_average,
-      :derived_vm_numvcpus,
-      :derived_memory_used,
-      :net_usage_rate_average
-    ],
-    :ContainerService_container_groups    => [
-      :cpu_usage_rate_average,
-      :derived_vm_numvcpus,
-      :derived_memory_used,
-      :net_usage_rate_average
-    ],
-    :ContainerReplicator_container_groups => [
-      :cpu_usage_rate_average,
-      :derived_vm_numvcpus,
-      :derived_memory_used,
-      :net_usage_rate_average
-    ],
-    :AvailabilityZone_vms                 => [
-      :cpu_usage_rate_average,
-      :derived_memory_used,
-      :net_usage_rate_average,
-      :disk_usage_rate_average
-    ],
-    :HostAggregate_vms                    => [
-      :cpu_usage_rate_average,
-      :derived_memory_used,
-      :net_usage_rate_average,
-      :disk_usage_rate_average
-    ],
+    :ContainerImage_containers             => CONTAINER_ROLLUP_COLS,
+    :ContainerProject_all_container_groups => CONTAINER_ROLLUP_COLS,
+    :ContainerService_container_groups     => CONTAINER_ROLLUP_COLS,
+    :ContainerReplicator_container_groups  => CONTAINER_ROLLUP_COLS,
+    :AvailabilityZone_vms                  => VM_ROLLUP_COLS,
+    :HostAggregate_vms                     => VM_ROLLUP_COLS,
     :Service_vms                           => [
       :cpu_ready_delta_summation,
       :cpu_system_delta_summation,
@@ -190,6 +162,10 @@ module Metric::Rollup
   DERIVED_COLS_EXCLUDED_CLASSES = ['MiqRegion', 'MiqEnterprise']
   TAG_SEP = "|"
 
+  def self.aggregate_columns(klass, assoc, interval_name)
+    interval_name == "realtime" ? const_get("#{klass.base_class.name.underscore.upcase}_REALTIME_COLS") : AGGREGATE_COLS["#{klass.base_class}_#{assoc}".to_sym]
+  end
+
   def self.rollup_realtime(obj, rt_ts, _interval_name, _time_profile, new_perf, orig_perf)
     # Roll up realtime metrics from child objects
     children = obj.class::PERF_ROLLUP_CHILDREN
@@ -250,6 +226,7 @@ module Metric::Rollup
       end
 
       next unless obj.kind_of?(VmOrTemplate)
+
       new_perf[:min_max] ||= {}
       BURST_COLS.each do |col|
         value = rt.send(col)
@@ -266,14 +243,19 @@ module Metric::Rollup
     new_perf
   end
 
+  # @param obj parent object
+  # @param timestamp [Time] for hourly, time is at the beginning of the hour
+  # @param interval_name  ["realtime", "hourly", "historical"]
+  # @param assoc [Symbol] name of the association to rollup
   def self.rollup_child_metrics(obj, timestamp, interval_name, assoc)
-    ts = timestamp.kind_of?(Time) ? timestamp.utc.iso8601 : timestamp
-    recs = obj.send("#{assoc}_from_vim_performance_state_for_ts", timestamp)
+    timestamp = Time.parse(timestamp).utc if timestamp.kind_of?(String)
+    ts = timestamp.utc.iso8601
+    recs = obj.vim_performance_state_association(timestamp, assoc).to_a
 
     result = {}
     counts = {}
 
-    agg_cols = interval_name == "realtime" ? const_get("#{obj.class.base_class.name.underscore.upcase}_REALTIME_COLS") : AGGREGATE_COLS["#{obj.class.base_class}_#{assoc}".to_sym]
+    agg_cols = aggregate_columns(obj.class, assoc, interval_name)
     agg_cols.each do |c|
       # Initialize aggregation col values and counts to zero before starting
       counts[c] = 0
@@ -282,15 +264,20 @@ module Metric::Rollup
 
     perf_recs = Metric::Finders.hash_by_capture_interval_name_and_timestamp(recs, ts, ts, interval_name)
 
-    # Preload states for perf timestamp and the current hour. We need to cache
-    #   the current hour too because the capture in vim_performance_state_for_ts,
-    #   if not found for the perf timestamp, will return a state for the current
-    #   hour only.
+    # Preload states for perf timestamp and the current hour.
+    #   in a single query bring back all relevant performance states
+    #   preload puts the states into rec's association where vim_performance_state_for_ts can find it
+    #
+    #   The scope passed in gets appied by rails to the rec.vim_performance_states
+    #
+    #   We are only concerned with the timestamp of interest.
+    #   If the record for that time are not found, use the current performance_state (can't capture in the past)
     MiqPreloader.preload(recs, :vim_performance_states, VimPerformanceState.where(:timestamp => [ts, Metric::Helper.nearest_hourly_timestamp(Time.now.utc)])) unless recs.empty?
 
     recs.each do |rec|
       perf = perf_recs.fetch_path(rec.class.base_class.name, rec.id, interval_name, ts)
       next unless perf
+
       state = rec.vim_performance_state_for_ts(timestamp)
       agg_cols.each do |c|
         result[c] ||= 0
@@ -344,13 +331,16 @@ module Metric::Rollup
 
   def self.rollup_assoc(c, result, value)
     return if value.nil?
+
     ASSOC_KEYS.each do |assoc|
       next if value[assoc].nil?
+
       result[c] ||= {}
       result[c][assoc] ||= {}
 
       [:on, :off].each do |mode|
         next if value[assoc][mode].nil?
+
         result[c][assoc][mode] ||= []
         result[c][assoc][mode].concat(value[assoc][mode]).uniq!
       end
@@ -359,6 +349,7 @@ module Metric::Rollup
 
   def self.rollup_tags(c, result, value)
     return if value.blank?
+
     result[c] ||= ""
     result[c] = result[c].split(TAG_SEP).concat(value.split(TAG_SEP)).uniq.join(TAG_SEP)
   end

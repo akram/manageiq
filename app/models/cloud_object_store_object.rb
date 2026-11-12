@@ -11,11 +11,9 @@ class CloudObjectStoreObject < ApplicationRecord
   include ProcessTasksMixin
   include SupportsFeatureMixin
 
-  include_concern 'Operations'
+  include Operations
 
   alias_attribute :name, :key
-
-  supports_not :delete, :reason => N_("Delete operation is not supported.")
 
   def disconnect_inv
     # This is for bypassing a weird Rails behaviour. If we do a ems.cloud_object_store_objects.delete(objects) and a

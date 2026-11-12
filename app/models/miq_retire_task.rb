@@ -1,4 +1,7 @@
 class MiqRetireTask < MiqRequestTask
+  include StateMachine
+  include ConfigurationScriptContextSourceDetailsMixin
+
   validate :validate_request_type, :validate_state
 
   AUTOMATE_DRIVES = true
@@ -11,39 +14,36 @@ class MiqRetireTask < MiqRequestTask
              req_obj.source.name
            end
 
-    "#{request_class::TASK_DESCRIPTION} for: #{name}"
+    _("%{request_description} for: %{request_source}") % {:request_description => _(request_class::TASK_DESCRIPTION), :request_source => name}
+  end
+
+  def do_request
+    signal :run_retire
   end
 
   def deliver_to_automate(req_type = request_type, zone = nil)
-    task_check_on_delivery
+    args = {
+      :object_type   => self.class.name,
+      :object_id     => id,
+      :attrs         => {"request" => req_type},
+      :instance_name => "AUTOMATION",
+      :user_id       => miq_request.requester.id,
+      :miq_group_id  => miq_request.requester.current_group_id,
+      :tenant_id     => miq_request.requester.current_group.tenant_id,
+    }
 
-    _log.info("Queuing #{request_class::TASK_DESCRIPTION}: [#{description}]...")
-    if self.class::AUTOMATE_DRIVES
-      args = {
-        :object_type   => self.class.name,
-        :object_id     => id,
-        :attrs         => {"request" => req_type},
-        :instance_name => "AUTOMATION",
-        :user_id       => miq_request.requester.id,
-        :miq_group_id  => miq_request.requester.current_group_id,
-        :tenant_id     => miq_request.requester.current_group.tenant_id,
-      }
+    MiqAeEngine.set_automation_attributes_from_objects(source, args[:attrs])
 
-      MiqAeEngine::set_automation_attributes_from_objects(source, args[:attrs])
-
-      zone ||= source.respond_to?(:my_zone) ? source.my_zone : MiqServer.my_zone
-      MiqQueue.put(
-        :class_name     => 'MiqAeEngine',
-        :method_name    => 'deliver',
-        :args           => [args],
-        :role           => 'automate',
-        :zone           => options.fetch(:miq_zone, zone),
-        :tracking_label => tracking_label_id,
-      )
-      update_and_notify_parent(:state => "pending", :status => "Ok", :message => "Automation Starting")
-    else
-      execute_queue
-    end
+    zone ||= source.respond_to?(:my_zone) ? source.my_zone : MiqServer.my_zone
+    MiqQueue.put(
+      :class_name     => 'MiqAeEngine',
+      :method_name    => 'deliver',
+      :args           => [args],
+      :role           => 'automate',
+      :zone           => options.fetch(:miq_zone, zone),
+      :tracking_label => tracking_label_id
+    )
+    update_and_notify_parent(:state => "pending", :status => "Ok", :message => "Automation Starting")
   end
 
   def after_request_task_create
@@ -67,7 +67,7 @@ class MiqRetireTask < MiqRequestTask
 
   def before_ae_starts(_options)
     reload
-    if state.to_s.downcase.in?(%w(pending queued))
+    if state.to_s.downcase.in?(%w[pending queued])
       _log.info("Executing #{request_class::TASK_DESCRIPTION} request: [#{description}]")
       update_and_notify_parent(:state => "active", :status => "Ok", :message => "In Process")
     end
@@ -87,5 +87,13 @@ class MiqRetireTask < MiqRequestTask
 
   def self.display_name(number = 1)
     n_('Retire Task', 'Retire Tasks', number)
+  end
+
+  def statemachine_task_status
+    if state == "finished"
+      status.to_s.downcase == "error" ? "error" : "ok"
+    else
+      "retry"
+    end
   end
 end

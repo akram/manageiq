@@ -48,48 +48,6 @@ RSpec.describe Vm do
     expect { vm.validate_native_console_support }.to raise_error MiqException::RemoteConsoleNotSupportedError
   end
 
-  context ".find_all_by_mac_address_and_hostname_and_ipaddress" do
-    before do
-      @hardware1 = FactoryBot.create(:hardware)
-      @vm1 = FactoryBot.create(:vm_vmware, :hardware => @hardware1)
-
-      @hardware2 = FactoryBot.create(:hardware)
-      @vm2 = FactoryBot.create(:vm_vmware, :hardware => @hardware2)
-    end
-
-    it "mac_address" do
-      address = "ABCDEFG"
-      guest_device = FactoryBot.create(:guest_device, :address => address, :device_type => "ethernet")
-      @hardware1.guest_devices << guest_device
-
-      expect(described_class.find_all_by_mac_address_and_hostname_and_ipaddress(address, nil, nil))
-        .to eql([@vm1])
-    end
-
-    it "hostname" do
-      hostname = "ABCDEFG"
-      network = FactoryBot.create(:network, :hostname => hostname)
-      @hardware1.networks << network
-
-      expect(described_class.find_all_by_mac_address_and_hostname_and_ipaddress(nil, hostname, nil))
-        .to eql([@vm1])
-    end
-
-    it "ipaddress" do
-      ipaddress = "127.0.0.1"
-      network = FactoryBot.create(:network, :ipaddress => ipaddress)
-      @hardware1.networks << network
-
-      expect(described_class.find_all_by_mac_address_and_hostname_and_ipaddress(nil, nil, ipaddress))
-        .to eql([@vm1])
-    end
-
-    it "returns an empty list when all are blank" do
-      expect(described_class.find_all_by_mac_address_and_hostname_and_ipaddress(nil, nil, nil)).to eq([])
-      expect(described_class.find_all_by_mac_address_and_hostname_and_ipaddress('', '', '')).to eq([])
-    end
-  end
-
   context "with relationships of multiple types" do
     before do
       @rp        = FactoryBot.create(:resource_pool, :name => "RP")
@@ -123,7 +81,7 @@ RSpec.describe Vm do
   context "#invoke_tasks_local" do
     before do
       Zone.seed
-      EvmSpecHelper.create_guid_miq_server_zone
+      EvmSpecHelper.local_miq_server
 
       @host = FactoryBot.create(:host)
       @vm = FactoryBot.create(:vm_vmware, :host => @host)
@@ -169,7 +127,7 @@ RSpec.describe Vm do
 
   context "#start" do
     before do
-      EvmSpecHelper.create_guid_miq_server_zone
+      EvmSpecHelper.local_miq_server
       @host = FactoryBot.create(:host_vmware)
       @vm = FactoryBot.create(:vm_vmware,
                                :host      => @host,
@@ -185,8 +143,7 @@ RSpec.describe Vm do
 
       allow(MiqAeEngine).to receive_messages(:deliver => ['ok', 'sucess', MiqAeEngine::MiqAeWorkspaceRuntime.new])
       @vm.start
-      status, message, result = MiqQueue.first.deliver
-      MiqQueue.first.delivered(status, message, result)
+      MiqQueue.first.deliver_and_process
     end
 
     it "policy prevented" do
@@ -203,7 +160,7 @@ RSpec.describe Vm do
 
   context "#scan" do
     before do
-      EvmSpecHelper.create_guid_miq_server_zone
+      EvmSpecHelper.local_miq_server
       @host = FactoryBot.create(:host_vmware)
       @vm = FactoryBot.create(
         :vm_vmware,
@@ -220,8 +177,7 @@ RSpec.describe Vm do
 
       allow(MiqAeEngine).to receive_messages(:deliver => ['ok', 'sucess', MiqAeEngine::MiqAeWorkspaceRuntime.new])
       @vm.scan
-      status, message, result = MiqQueue.first.deliver
-      MiqQueue.first.delivered(status, message, result)
+      MiqQueue.first.deliver_and_process
     end
 
     it "policy prevented" do
@@ -295,6 +251,31 @@ RSpec.describe Vm do
     it 'returns all of the console types' do
       vm = FactoryBot.create(:vm)
       expect(vm.supported_consoles.keys).to match_array([:html5, :vmrc, :native])
+    end
+  end
+
+  context "#supports?(:vm_control_powered_on)" do
+    it "returns true for powered on vms with control" do
+      # need a vendor to properly specify the running state
+      vm = FactoryBot.create(:vm_vmware,
+                             :host                  => FactoryBot.create(:host),
+                             :ext_management_system => FactoryBot.create(:ext_management_system))
+      expect(vm.unsupported_reason(:control)).to eq(nil)
+      expect(vm.unsupported_reason(:vm_control_powered_on)).to eq(nil)
+    end
+
+    it "returns the control reason if vm is not properly controlled" do
+      vm = FactoryBot.create(:vm_vmware)
+      expect(vm.unsupported_reason(:control)).to match(/not connected to a Host/i)
+      expect(vm.unsupported_reason(:vm_control_powered_on)).to match(/not connected to a Host/i)
+    end
+
+    it "returns false for powered off vms with control" do
+      vm = FactoryBot.create(:vm_vmware,
+                             :raw_power_state       => "unknown",
+                             :host                  => FactoryBot.create(:host),
+                             :ext_management_system => FactoryBot.create(:ext_management_system))
+      expect(vm.unsupported_reason(:vm_control_powered_on)).to match(/not powered on/i)
     end
   end
 end

@@ -122,6 +122,7 @@ class MiqRegion < ApplicationRecord
       else
         id_cols = connection.columns(t).select { |c| c.name.ends_with?("_id") }
         next if id_cols.empty?
+
         conditions = id_cols.collect { |c| "(#{sanitize_sql(region_to_conditions(region, c.name))})" }.join(" OR ")
       end
 
@@ -164,10 +165,6 @@ class MiqRegion < ApplicationRecord
     ext_management_systems.select { |e| e.kind_of?(ManageIQ::Providers::DatawarehouseManager) }
   end
 
-  def ems_monitors
-    ext_management_systems.select { |e| e.kind_of?(ManageIQ::Providers::MonitoringManager) }
-  end
-
   def ems_configproviders
     ext_management_systems.select { |e| e.kind_of?(ManageIQ::Providers::ConfigurationManager) }
   end
@@ -189,22 +186,15 @@ class MiqRegion < ApplicationRecord
   end
 
   def remote_ui_ipaddress
-    server = remote_ui_miq_server
-    server.try(:ipaddress)
+    remote_ui_miq_server&.ui_ipaddress
   end
 
   def remote_ui_hostname
-    server = remote_ui_miq_server
-    server && (server.hostname || server.ipaddress)
+    remote_ui_miq_server&.ui_hostname
   end
 
   def remote_ui_url(contact_with = :hostname)
-    svr = remote_ui_miq_server
-    remote_ui_url_override = svr.settings_for_resource.ui.url if svr
-    return remote_ui_url_override if remote_ui_url_override
-
-    hostname = send("remote_ui_#{contact_with}")
-    hostname && "https://#{hostname}"
+    remote_ui_miq_server&.ui_url(contact_with)
   end
 
   def remote_ws_miq_server
@@ -212,31 +202,27 @@ class MiqRegion < ApplicationRecord
   end
 
   def remote_ws_address
-    ::Settings.webservices.contactwith == 'hostname' ? remote_ws_hostname : remote_ws_ipaddress
+    remote_ws_miq_server&.ws_address
   end
 
   def remote_ws_ipaddress
-    miq_server = remote_ws_miq_server
-    miq_server.try(:ipaddress)
+    remote_ws_miq_server&.ws_ipaddress
   end
 
   def remote_ws_hostname
-    miq_server = remote_ws_miq_server
-    miq_server && (miq_server.hostname || miq_server.ipaddress)
+    remote_ws_miq_server&.ws_hostname
   end
 
   def remote_ws_url
-    svr = remote_ws_miq_server
-    remote_url_override = svr.settings_for_resource.webservices.url if svr
-    return remote_url_override if remote_url_override
-
-    hostname = remote_ws_address
-    hostname && URI::HTTPS.build(:host => hostname).to_s
+    remote_ws_miq_server&.ws_url
   end
 
   def api_system_auth_token(userid)
+    miq_server = remote_ws_miq_server
+    return if miq_server.nil?
+
     token_hash = {
-      :server_guid   => remote_ws_miq_server.guid,
+      :server_guid   => miq_server.guid,
       :userid        => userid,
       :timestamp     => Time.now.utc,
       :user_metadata => User.metadata_for_system_token(userid)
@@ -256,7 +242,7 @@ class MiqRegion < ApplicationRecord
 
   def perf_capture_always
     @perf_capture_always ||= VALID_CAPTURE_ALWAYS_TYPES.each_with_object({}) do |type, h|
-      h[type] = self.is_tagged_with?("capture_enabled", :ns => "/performance/#{type}")
+      h[type] = is_tagged_with?("capture_enabled", :ns => "/performance/#{type}")
     end.freeze
   end
 
@@ -280,7 +266,7 @@ class MiqRegion < ApplicationRecord
     # Set @perf_capture_always since we already know all the answers
     options = options.dup
     (VALID_CAPTURE_ALWAYS_TYPES - options.keys).each do |type|
-      options[type] = self.is_tagged_with?("capture_enabled", :ns => "/performance/#{type}")
+      options[type] = is_tagged_with?("capture_enabled", :ns => "/performance/#{type}")
     end
     @perf_capture_always = options.freeze
   end

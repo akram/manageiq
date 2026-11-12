@@ -10,8 +10,18 @@ class ContainerReplicator < ApplicationRecord
   belongs_to  :ext_management_system, :foreign_key => "ems_id"
   has_many :container_groups
   belongs_to :container_project
-  has_many :labels, -> { where(:section => "labels") }, :class_name => "CustomAttribute", :as => :resource, :dependent => :destroy
-  has_many :selector_parts, -> { where(:section => "selectors") }, :class_name => "CustomAttribute", :as => :resource, :dependent => :destroy
+  has_many :annotations, -> { where(:section => "annotations") }, # rubocop:disable Rails/HasManyOrHasOneDependent
+           :class_name => "CustomAttribute",
+           :as         => :resource,
+           :inverse_of => :resource
+  has_many :labels, -> { where(:section => "labels") }, # rubocop:disable Rails/HasManyOrHasOneDependent
+           :class_name => "CustomAttribute",
+           :as         => :resource,
+           :inverse_of => :resource
+  has_many :selector_parts, -> { where(:section => "selectors") }, # rubocop:disable Rails/HasManyOrHasOneDependent
+           :class_name => "CustomAttribute",
+           :as         => :resource,
+           :inverse_of => :resource
   has_many :container_nodes, -> { distinct }, :through => :container_groups
 
   # Needed for metrics
@@ -35,6 +45,18 @@ class ContainerReplicator < ApplicationRecord
       # TODO: implement policy events and its relationship
       ["#{events_table_name(assoc)}.ems_id = ?", ems_id]
     end
+  end
+
+  def ems_event_filter
+    {
+      "container_namespace"       => container_project.name,
+      "container_replicator_name" => name,
+      "ems_id"                    => ext_management_system.id
+    }
+  end
+
+  def miq_event_filter
+    {"ems_id" => ext_management_system.id}
   end
 
   def perf_rollup_parents(_interval_name = nil)

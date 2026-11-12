@@ -19,6 +19,7 @@ module Authenticator
     end
 
     attr_reader :config
+
     def initialize(config)
       @config = config
     end
@@ -41,6 +42,7 @@ module Authenticator
 
     def authorize_user(userid)
       return unless user_authorizable_without_authentication?
+
       authenticate(userid, "", {}, {:require_user => true, :authorize_only => true})
     end
 
@@ -89,11 +91,10 @@ module Authenticator
           audit_success(audit.merge(:message => "Authentication successful for user #{username}"))
         else
           reason = failure_reason(username, request)
-          reason = ": #{reason}" unless reason.blank?
+          reason = ": #{reason}" if reason.present?
           audit_failure(audit.merge(:message => "Authentication failed for userid #{username}#{reason}"))
           raise MiqException::MiqEVMLoginError, fail_message
         end
-
       rescue MiqException::MiqEVMLoginError => err
         _log.warn(err.message)
         raise
@@ -107,6 +108,7 @@ module Authenticator
         if task.nil? || MiqTask.status_error?(task.status) || MiqTask.status_timeout?(task.status)
           raise MiqException::MiqEVMLoginError, fail_message
         end
+
         user_or_taskid = case_insensitive_find_by_userid(task.userid)
       end
 
@@ -120,7 +122,6 @@ module Authenticator
 
     def authorize(taskid, username, *args)
       audit = {:event => "authorize", :userid => username}
-      decrypt_ldap_password(config) if MiqLdap.using_ldap?
 
       run_task(taskid, "Authorizing") do |task|
         begin
@@ -135,14 +136,15 @@ module Authenticator
             return nil
           end
 
-          matching_groups = match_groups(groups_for(identity))
+          incoming_groups = groups_for(identity)
+          matching_groups = match_groups(incoming_groups)
           userid, user = find_or_initialize_user(identity, username)
           update_user_attributes(user, userid, identity)
           audit_new_user(audit, user) if user.new_record?
           user.miq_groups = matching_groups
 
           if matching_groups.empty?
-            msg = "Authentication failed for userid #{user.userid}, unable to match user's group membership to an EVM role"
+            msg = "Authentication failed for userid #{user.userid}, unable to match user's group membership to an EVM role. The incoming groups are: #{incoming_groups.join(", ")}"
             _log.warn(msg)
             audit_failure(audit.merge(:message => msg))
             task.error(msg)
@@ -210,9 +212,6 @@ module Authenticator
         if username.include?('\\')
           parts = username.split('\\')
           username = "#{parts.last}@#{parts.first}"
-        elsif !username.include?('@') && MiqLdap.using_ldap?
-          suffix = config[:user_suffix]
-          username = "#{username}@#{suffix}"
         end
         user = case_insensitive_find_by_userid(username)
       end
@@ -255,18 +254,9 @@ module Authenticator
       !defined?(Rails::Server)
     end
 
-    def decrypt_ldap_password(config)
-      config[:bind_pwd] = ManageIQ::Password.try_decrypt(config[:bind_pwd])
-    end
-
-    def encrypt_ldap_password(config)
-      config[:bind_pwd] = ManageIQ::Password.try_encrypt(config[:bind_pwd])
-    end
-
     def authorize_queue(username, _request, _options, *args)
       task = MiqTask.create(:name => "#{self.class.proper_name} User Authorization of '#{username}'", :userid => username)
       if authorize_queue?
-        encrypt_ldap_password(config) if MiqLdap.using_ldap?
         MiqQueue.submit_job(
           :class_name   => self.class.to_s,
           :method_name  => "authorize",
@@ -278,7 +268,7 @@ module Authenticator
             :instance_id => task.id,
             :method_name => :queue_callback_on_exceptions,
             :args        => ['Finished']
-          },
+          }
         )
       else
         authorize(task.id, username, *args)
@@ -309,12 +299,12 @@ module Authenticator
     # TODO: Fix this icky select matching with tenancy
     def match_groups(external_group_names)
       return [] if external_group_names.empty?
-      external_group_names = external_group_names.collect(&:downcase)
 
+      external_group_names = external_group_names.collect(&:downcase)
       internal_groups = MiqGroup.in_my_region.order(:sequence).to_a
 
-      external_group_names.each { |g| _log.debug("External Group: #{g}") }
-      internal_groups.each      { |g| _log.debug("Internal Group: #{g.description.downcase}") }
+      _log.debug("External Groups: #{external_group_names.join(", ")}")
+      _log.debug("Internal Groups: #{internal_groups.map { |g| g.description.downcase }.join(", ")}")
 
       internal_groups.select { |g| external_group_names.include?(g.description.downcase) }
     end

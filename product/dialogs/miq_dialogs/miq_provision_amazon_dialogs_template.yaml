@@ -70,13 +70,6 @@
           :required: false
           :display: :hide
           :data_type: :string
-        :owner_load_ldap:
-          :pressed:
-            :method: :retrieve_ldap
-          :description: Look Up LDAP Email
-          :required: false
-          :display: :show
-          :data_type: :button
         :owner_manager_phone:
           :description: Phone
           :required: false
@@ -159,7 +152,8 @@
             :method: :allowed_cloud_networks
           :description: Virtual Private Cloud
           :auto_select_single: false
-          :required: false
+          :required: true
+          :required_method: :validate_cloud_network
           :display: :edit
           :data_type: :integer
         :cloud_subnet:

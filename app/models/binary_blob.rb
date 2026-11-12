@@ -1,5 +1,5 @@
 class BinaryBlob < ApplicationRecord
-  include_concern 'Purging'
+  include Purging
 
   belongs_to :resource, :polymorphic => true
   has_many :binary_blob_parts, -> { order(:id) }, :dependent => :delete_all
@@ -7,7 +7,7 @@ class BinaryBlob < ApplicationRecord
   def delete_binary
     self.md5 = self.size = self.part_size = nil
     binary_blob_parts.delete_all
-    self.save!
+    save!
   end
 
   # Get binary file from database into a raw String
@@ -19,6 +19,7 @@ class BinaryBlob < ApplicationRecord
     unless md5.nil? || md5 == Digest::MD5.hexdigest(data)
       raise _("md5 of %{name} id [%{number}] is incorrect") % {:name => self.class.name, :number => id}
     end
+
     data
   end
 
@@ -36,7 +37,7 @@ class BinaryBlob < ApplicationRecord
       buf = data.slice!(0..self.part_size)
       binary_blob_parts << BinaryBlobPart.new(:data => buf)
     end
-    self.save!
+    save!
 
     self
   end
@@ -66,6 +67,7 @@ class BinaryBlob < ApplicationRecord
     unless md5.nil? || md5 == hasher.hexdigest
       raise _("md5 of %{name} id [%{number}] is incorrect") % {:name => self.class.name, :number => id}
     end
+
     true
   end
 
@@ -89,7 +91,7 @@ class BinaryBlob < ApplicationRecord
     end
 
     self.md5 = hasher.hexdigest
-    self.save!
+    save!
 
     self
   end
@@ -108,7 +110,7 @@ class BinaryBlob < ApplicationRecord
   end
 
   def data
-    serializer.load(binary)
+    serializer.respond_to?(:unsafe_load) ? serializer.unsafe_load(binary) : serializer.load(binary)
   end
 
   def store_data(data_type, the_data)

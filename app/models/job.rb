@@ -1,7 +1,5 @@
 class Job < ApplicationRecord
-  require_nested :Dispatcher
-
-  include_concern 'StateMachine'
+  include StateMachine
   include UuidMixin
   include FilterableMixin
 
@@ -50,7 +48,7 @@ class Job < ApplicationRecord
   end
 
   def check_active_on_destroy
-    if self.is_active?
+    if is_active?
       _log.warn("Job is active, delete not allowed - #{attributes_log}")
       throw :abort
     end
@@ -73,7 +71,7 @@ class Job < ApplicationRecord
     self.message = message
     save
 
-    return unless self.is_active?
+    return unless is_active?
 
     # Update worker heartbeat
     MiqQueue.get_worker(guid).try(:update_heartbeat)
@@ -95,6 +93,7 @@ class Job < ApplicationRecord
 
   def dispatch_finish
     return if @storage_dispatcher_process_finish_flag
+
     _log.info("Dispatch Status is 'finished'")
     self.dispatch_status = "finished"
     save
@@ -132,7 +131,7 @@ class Job < ApplicationRecord
   def timeout!
     message = "job timed out after #{Time.now - updated_on} seconds of inactivity.  Inactivity threshold [#{current_job_timeout} seconds]"
     _log.warn("Job: guid: [#{guid}], #{message}, aborting")
-    attributes = { :args => [message, "error"] }
+    attributes = {:args => [message, "error"]}
     MiqQueue.create_with(attributes).put_unless_exists(
       :class_name  => self.class.base_class.name,
       :instance_id => id,
@@ -158,7 +157,7 @@ class Job < ApplicationRecord
           # Allow jobs to run longer if the MiqQueue task is still active.  (Limited to MiqServer for now.)
           # TODO: can we add method_name, queue_name, role, instance_id to the exists?
           if job.miq_server_id
-            next if MiqQueue.exists?(:state => %w(dequeue ready), :task_id => job.guid, :class_name => "MiqServer")
+            next if MiqQueue.exists?(:state => %w[dequeue ready], :task_id => job.guid, :class_name => "MiqServer")
           end
           job.timeout!
         end
@@ -170,10 +169,7 @@ class Job < ApplicationRecord
   def timeout_adjustment
     timeout_adjustment = 1
     target = target_entity
-    if target.kind_of?(ManageIQ::Providers::Microsoft::InfraManager::Vm) ||
-       target.kind_of?(ManageIQ::Providers::Microsoft::InfraManager::Template)
-      timeout_adjustment = 4
-    elsif target.kind_of?(ManageIQ::Providers::Azure::CloudManager::Vm) ||
+    if target.kind_of?(ManageIQ::Providers::Azure::CloudManager::Vm) ||
           target.kind_of?(ManageIQ::Providers::Azure::CloudManager::Template)
       timeout_adjustment = 4
     end
@@ -197,6 +193,7 @@ class Job < ApplicationRecord
       timestamp = timestamp.to_time rescue nil
     end
     return false if timestamp.nil?
+
     (timestamp >= job_not_found_delay.seconds.ago)
   end
 
@@ -216,7 +213,7 @@ class Job < ApplicationRecord
       :class_name  => name,
       :method_name => "destroy",
       :priority    => MiqQueue::HIGH_PRIORITY,
-      :args        => [ids],
+      :args        => [ids]
     )
   end
 

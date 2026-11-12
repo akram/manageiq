@@ -1,5 +1,5 @@
 class EventStream < ApplicationRecord
-  include_concern 'Purging'
+  include Purging
   serialize :full_data
 
   belongs_to :target, :polymorphic => true
@@ -26,8 +26,13 @@ class EventStream < ApplicationRecord
   belongs_to :container_node
 
   belongs_to :physical_server
+  belongs_to :physical_storage
   belongs_to :physical_chassis, :inverse_of => :event_streams
   belongs_to :physical_switch, :inverse_of => :event_streams
+
+  virtual_attribute :ext_management_system_name, :string, :through => :ext_management_system, :source => :name
+  virtual_attribute :host_name, :string, :through => :host, :source => :name
+  virtual_attribute :vm_or_template_name, :string, :through => :vm_or_template, :source => :name
 
   virtual_column :group,       :type => :string
   virtual_column :group_level, :type => :string
@@ -35,8 +40,9 @@ class EventStream < ApplicationRecord
 
   after_commit :emit_notifications, :on => :create
 
-  DEFAULT_GROUP_NAME  = :other
-  DEFAULT_GROUP_LEVEL = :detail
+  DEFAULT_GROUP_NAME     = :other
+  DEFAULT_GROUP_NAME_STR = N_("Other")
+  DEFAULT_GROUP_LEVEL    = :detail
 
   def self.description
     raise NotImplementedError, "Description must be implemented in a subclass"
@@ -44,6 +50,10 @@ class EventStream < ApplicationRecord
 
   def self.class_group_levels
     []
+  end
+
+  def self.clear_event_groups_cache
+    descendants.each { |c| c.clear_event_groups_cache if c.respond_to?(:clear_event_groups_cache) }
   end
 
   def self.group_levels
@@ -56,64 +66,34 @@ class EventStream < ApplicationRecord
     _log.log_backtrace(err)
   end
 
-  # TODO: Consider moving since this is EmsEvent specific. group, group_level and group_name exposed as a virtual columns for reports/api.
   def self.event_groups
-    core_event_groups = ::Settings.event_handling.event_groups.to_hash
-    Settings.ems.each_with_object(core_event_groups) do |(_provider_type, provider_settings), event_groups|
-      provider_event_groups = provider_settings.fetch_path(:event_handling, :event_groups)
-      next unless provider_event_groups
-      DeepMerge.deep_merge!(
-        provider_event_groups.to_hash, event_groups,
-        :preserve_unmergeables => false,
-        :overwrite_arrays      => false
-      )
-    end
+    raise NotImplementedError, "event_groups must be implemented in a subclass"
   end
 
-  # TODO: Consider moving since this is EmsEvent specific. group, group_level and group_name exposed as a virtual columns for reports/api.
+  def group
+    group_and_level.first
+  end
+
+  def group_level
+    group_and_level.last
+  end
+
+  private def group_and_level
+    @group_and_level ||= self.class.group_and_level(event_type)
+  end
+
+  def group_name
+    @group_name ||= self.class.group_name(group)
+  end
+
   def self.group_and_level(event_type)
-    level = DEFAULT_GROUP_LEVEL # the level is detail as default
-    egroups = event_groups
-
-    group = egroups.detect do |_, value|
-      group_levels
-        .detect { |lvl| value[lvl]&.any? { |typ| !typ.starts_with?("/") && typ == event_type } }
-        .tap { |level_found| level = level_found || level }
-    end&.first
-
-    group ||= egroups.detect do |_, value|
-      group_levels
-        .detect { |lvl| value[lvl]&.any? { |typ| typ.starts_with?("/") && Regexp.new(typ[1..-2]).match?(event_type) } }
-        .tap { |level_found| level = level_found || level }
-    end&.first
-
-    group ||= DEFAULT_GROUP_NAME
-    return group, level
+    # Given a specific event_type, return the group and level for it
+    raise NotImplementedError, "group_and_level must be implemented in a subclass"
   end
 
   def self.group_name(group)
-    return if group.nil?
-    group = event_groups[group.to_sym]
-    group.nil? ? DEFAULT_GROUP_NAME.to_s.capitalize : group[:name]
-  end
-
-  # TODO: Consider moving since this is EmsEvent specific. group, group_level and group_name exposed as a virtual columns for reports/api.
-  def group
-    return @group unless @group.nil?
-    @group, @group_level = self.class.group_and_level(event_type)
-    @group
-  end
-
-  # TODO: Consider moving since this is EmsEvent specific. group, group_level and group_name exposed as a virtual columns for reports/api.
-  def group_level
-    return @group_level unless @group_level.nil?
-    @group, @group_level = self.class.group_and_level(event_type)
-    @group_level
-  end
-
-  # TODO: Consider moving since this is EmsEvent specific. group, group_level and group_name exposed as a virtual columns for reports/api.
-  def group_name
-    @group_name ||= self.class.group_name(group)
+    # Return the name for a specific event group
+    raise NotImplementedError, "group_name must be implemented in a subclass"
   end
 
   def self.timeline_classes

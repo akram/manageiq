@@ -13,7 +13,7 @@ RSpec.describe EmsEvent do
   context "container events" do
     let(:ems_ref) { "test_ems_ref" }
     let(:ems) { FactoryBot.create(:ems_kubernetes) }
-    let(:event_hash) { { :ems_ref => "event-ref", :ems_id => ems.id, :event_type => "STUFF_HAPPENED" } }
+    let(:event_hash) { {:ems_ref => "event-ref", :ems_id => ems.id, :event_type => "STUFF_HAPPENED"} }
     let(:container_project) { FactoryBot.create(:container_project, :ext_management_system => ems) }
 
     context "on node" do
@@ -71,12 +71,13 @@ RSpec.describe EmsEvent do
     let(:vm) { FactoryBot.create(:vm_openstack, :ems_ref => "vm1") }
     before do
       @zone = FactoryBot.create(:small_environment)
+      EvmSpecHelper.local_miq_server(:is_master => true, :zone => @zone)
       @ems  = @zone.ext_management_systems.first
       @availability_zone = FactoryBot.create(:availability_zone_openstack, :ems_ref => "az1")
     end
 
     context ".process_availability_zone_in_event!" do
-      let(:event_hash) { { :vm_or_template_id => vm.id } }
+      let(:event_hash) { {:vm_or_template_id => vm.id} }
       context "when the event has an availability zone" do
         before do
           event_hash[:availability_zone_ems_ref] = @availability_zone.ems_ref
@@ -120,8 +121,13 @@ RSpec.describe EmsEvent do
         }
       end
 
-      context "messaging_type: artemis" do
-        before { stub_settings_merge(:prototype => {:messaging_type => 'artemis'}) }
+      context "messaging_type: artemis, dequeue_method: miq_messaging" do
+        before do
+          stub_settings_merge(
+            :messaging => {:type => 'artemis'},
+            :workers   => {:worker_base => {:queue_worker_base => {:defaults => {:dequeue_method => "miq_messaging"}}}}
+          )
+        end
 
         it "Adds event to Artemis queue" do
           messaging_client = double("ManageIQ::Messaging")
@@ -134,14 +140,42 @@ RSpec.describe EmsEvent do
           }
 
           expect(messaging_client).to receive(:publish_topic).with(expected_queue_payload)
-          expect(MiqQueue).to receive(:messaging_client).with('event_handler').and_return(messaging_client)
+          expect(MiqQueue).to receive(:messaging_client).with('event_handler').and_return(messaging_client).twice
 
           described_class.add_queue('add', ems.id, event_hash)
         end
       end
 
-      context "messaging_type: kafka" do
-        before { stub_settings_merge(:prototype => {:messaging_type => 'kafka'}) }
+      context "messaging_type: artemis, dequeue_method: drb" do
+        before do
+          stub_settings_merge(
+            :messaging => {:type => 'artemis'},
+            :workers   => {:worker_base => {:queue_worker_base => {:event_handler => {:dequeue_method => "drb"}}}}
+          )
+        end
+
+        it "Adds event to Kafka topic" do
+          expected_queue_payload = {
+            :service     => "event",
+            :target_id   => ems.id,
+            :class_name  => described_class.name,
+            :method_name => 'add',
+            :args        => [event_hash],
+          }
+
+          expect(MiqQueue).to receive(:submit_job).with(expected_queue_payload)
+
+          described_class.add_queue('add', ems.id, event_hash)
+        end
+      end
+
+      context "messaging_type: kafka, dequeue_method: miq_messaging" do
+        before do
+          stub_settings_merge(
+            :messaging => {:type => 'kafka'},
+            :workers   => {:worker_base => {:queue_worker_base => {:defaults => {:dequeue_method => "miq_messaging"}}}}
+          )
+        end
 
         it "Adds event to Kafka topic" do
           messaging_client = double("ManageIQ::Messaging")
@@ -154,14 +188,37 @@ RSpec.describe EmsEvent do
           }
 
           expect(messaging_client).to receive(:publish_topic).with(expected_queue_payload)
-          expect(MiqQueue).to receive(:messaging_client).with('event_handler').and_return(messaging_client)
+          expect(MiqQueue).to receive(:messaging_client).with('event_handler').and_return(messaging_client).twice
+
+          described_class.add_queue('add', ems.id, event_hash)
+        end
+      end
+
+      context "messaging_type: kafka, dequeue_method: drb" do
+        before do
+          stub_settings_merge(
+            :messaging => {:type => 'kafka'},
+            :workers   => {:worker_base => {:queue_worker_base => {:event_handler => {:dequeue_method => "drb"}}}}
+          )
+        end
+
+        it "Adds event to Kafka topic" do
+          expected_queue_payload = {
+            :service     => "event",
+            :target_id   => ems.id,
+            :class_name  => described_class.name,
+            :method_name => 'add',
+            :args        => [event_hash],
+          }
+
+          expect(MiqQueue).to receive(:submit_job).with(expected_queue_payload)
 
           described_class.add_queue('add', ems.id, event_hash)
         end
       end
 
       context "messaging_type: miq_queue" do
-        before { stub_settings_merge(:prototype => {:messaging_type => 'miq_queue'}) }
+        before { stub_settings_merge(:messaging => {:type => 'miq_queue'}) }
 
         it "Adds event to MiqQueue" do
           expected_queue_payload = {
@@ -172,6 +229,7 @@ RSpec.describe EmsEvent do
             :args        => [event_hash],
           }
 
+          expect(MiqQueue).to receive(:messaging_client).with('event_handler').and_return(nil)
           expect(MiqQueue).to receive(:submit_job).with(expected_queue_payload)
 
           described_class.add_queue('add', ems.id, event_hash)
@@ -224,6 +282,19 @@ RSpec.describe EmsEvent do
             EmsEvent.where(@event_hash.except(:ems_ref)).count
           ).to eq(1)
           expect(ems_event).to be_nil
+        end
+
+        context "with event syndication" do
+          before do
+            stub_settings_merge(:event_streams => {:syndicate_events => true})
+          end
+
+          it "doesn't syndicate duplicate events" do
+            expect(EmsEvent).not_to receive(:syndicate_event)
+
+            ems_event = EmsEvent.add(@ems.id, @event_hash)
+            expect(ems_event).to be_nil
+          end
         end
 
         it "should add a new event if it has a different ems_ref" do
@@ -304,6 +375,31 @@ RSpec.describe EmsEvent do
         it "should prefer the active host" do
           ems_event = described_class.add(ems.id, event)
           expect(ems_event.host).to eq(host)
+        end
+      end
+    end
+  end
+
+  # NOTE: Do not use Settings stubs here (e.g. stub_settings_merge), as this test is meant to
+  # test the actual Settings across all providers.
+  describe ".event_groups (actual Settings)" do
+    described_class.event_groups.each do |group_name, group_data|
+      described_class.group_levels.each do |level|
+        group_data[level]&.each do |typ|
+          it ":#{group_name}/:#{level}/#{typ} is string or regex", :providers_common => true do
+            expect(typ.kind_of?(Regexp) || typ.kind_of?(String)).to eq(true)
+          end
+
+          if typ.kind_of?(Regexp)
+            it ":#{group_name}/:#{level}/#{typ} is usable in SQL queries", :providers_common => true do
+              expect { described_class.where("event_type ~ ?", typ.source).to_a }
+                .to_not raise_error
+            end
+
+            it ":#{group_name}/:#{level}/#{typ} only uses case insensitivity option", :providers_common => true do
+              expect(typ.options & (Regexp::EXTENDED | Regexp::MULTILINE)).to eq(0)
+            end
+          end
         end
       end
     end
@@ -452,6 +548,13 @@ RSpec.describe EmsEvent do
     end
   end
 
+  it "group_names_and_levels" do
+    result = described_class.group_names_and_levels
+    expect(result.keys).to match_array(%i[description group_names group_levels])
+    expect(result[:description]).to eq("Management Events")
+    expect(result[:group_names].keys).to include(:other)
+  end
+
   context 'refresh target' do
     describe 'src_vm_or_dest_host_refresh_target' do
       let(:ems)   { FactoryBot.create(:ems_vmware) }
@@ -487,7 +590,7 @@ RSpec.describe EmsEvent do
 
       before do
         allow(ems).to receive(:allow_targeted_refresh?).and_return(true)
-        allow(ems.class.const_get('EventTargetParser')).to receive(:new).and_return(target_parser)
+        allow(ems.class.const_get(:EventTargetParser)).to receive(:new).and_return(target_parser)
         expect(target_parser).to receive(:parse).and_return(targets)
       end
 
@@ -517,6 +620,27 @@ RSpec.describe EmsEvent do
         expect(EmsRefresh).to receive(:queue_refresh).with(ems, any_args)
         ems_event.manager_refresh
       end
+    end
+  end
+
+  context 'Physical Storage Events' do
+    let(:ems)   { FactoryBot.create(:ems_storage) }
+    let(:physical_storage) { FactoryBot.create(:physical_storage, :name => "my-storage", :ems_ref => "ems1", :ext_management_system => ems) }
+    let(:event_hash) do
+      {
+        :event_type               => "physical_storage_alert",
+        :ems_ref                  => "1",
+        :physical_storage_ems_ref => physical_storage.ems_ref,
+        :ems_id                   => ems.id,
+        :message                  => "description"
+      }
+    end
+
+    it "test process_physical_storage_in_event!" do
+      event = EmsEvent.add(ems.id, event_hash)
+      expect(event.attributes.keys).to include('physical_storage_id', 'physical_storage_name')
+      expect(event.physical_storage_id).to eq(physical_storage.id)
+      expect(event.physical_storage_name).to eq(physical_storage.name)
     end
   end
 end

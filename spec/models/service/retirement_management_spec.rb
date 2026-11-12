@@ -199,7 +199,7 @@ RSpec.describe "Service Retirement Management" do
     @service.mark_retired
     @service.reload
     expect(@service.retired).to be_truthy
-    expect(@service.retires_on).to be_between(Time.zone.now - 1.hour, Time.zone.now + 1.second)
+    expect(@service.retires_on).to be_between(1.hour.ago, 1.second.from_now)
     expect(@service.retirement_state).to eq("retired")
   end
 
@@ -263,14 +263,14 @@ RSpec.describe "Service Retirement Management" do
     it "with string user" do
       event_name = 'foo'
       event_hash = {:userid => "admin", :service => @service, :type => "Service"}
-      expect(MiqEvent).to receive(:raise_evm_event).with(@service, event_name, event_hash, :user_id => User.find_by(:userid => "admin").id, :group_id => User.find_by(:userid => "admin").current_group.id, :tenant_id => User.find_by(:userid => "admin").current_tenant.id)
+      expect(MiqEvent).to receive(:raise_evm_event).with(@service, event_name, event_hash, {:user_id => User.find_by(:userid => "admin").id, :group_id => User.find_by(:userid => "admin").current_group.id, :tenant_id => User.find_by(:userid => "admin").current_tenant.id})
       @service.raise_retirement_event(event_name, "admin")
     end
 
     it "with user object" do
       event_name = 'foo'
       event_hash = {:userid => user, :service => @service, :type => "Service"}
-      expect(MiqEvent).to receive(:raise_evm_event).with(@service, event_name, event_hash, :user_id => user.id, :group_id => user.current_group.id, :tenant_id => user.current_tenant.id)
+      expect(MiqEvent).to receive(:raise_evm_event).with(@service, event_name, event_hash, {:user_id => user.id, :group_id => user.current_group.id, :tenant_id => user.current_tenant.id})
       @service.raise_retirement_event(event_name, user)
     end
 

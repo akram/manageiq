@@ -81,6 +81,39 @@ RSpec.describe CustomButtonSet do
     expect(CustomButtonSet.count).to eq(2)
   end
 
+  describe "#add_button" do
+    let(:vm)                { FactoryBot.create(:vm_vmware) }
+    let(:custom_button_1)   { FactoryBot.create(:custom_button, :applies_to => vm) }
+    let(:custom_button_2)   { FactoryBot.create(:custom_button, :applies_to => vm) }
+    let(:set_data)          { {:applies_to_class => "Vm", :button_order => []} }
+    let(:custom_button_set) { FactoryBot.create(:custom_button_set, :name => "set_1", :set_data => set_data) }
+
+    it "adds a button id to button_order" do
+      custom_button_set.add_button(custom_button_1.id)
+      expect(custom_button_set.reload.set_data[:button_order]).to eq([custom_button_1.id])
+    end
+
+    it "does not add duplicate ids when called twice with the same button" do
+      custom_button_set.add_button(custom_button_1.id)
+      custom_button_set.add_button(custom_button_1.id)
+      expect(custom_button_set.reload.set_data[:button_order]).to eq([custom_button_1.id])
+    end
+  end
+
+  it "#reorder_group_index" do
+    service_template1  = FactoryBot.create(:service_template)
+    custom_button1     = FactoryBot.create(:custom_button, :applies_to => service_template1)
+    custom_button2     = FactoryBot.create(:custom_button, :applies_to => service_template1)
+    set_data1          = {:applies_to_class => "ServiceTemplate", :button_order => [custom_button1.id], :group_index => 1}
+    custom_button_set1 = FactoryBot.create(:custom_button_set, :set_data => set_data1)
+    set_data2          = {:applies_to_class => "ServiceTemplate", :button_order => [custom_button2.id], :group_index => 2}
+    custom_button_set2 = FactoryBot.create(:custom_button_set, :set_data => set_data2)
+
+    CustomButtonSet.reorder_group_index([custom_button_set2.id, custom_button_set1.id])
+    expect(custom_button_set1.reload.set_data[:group_index]).to eq(2)
+    expect(custom_button_set2.reload.set_data[:group_index]).to eq(1)
+  end
+
   context '#update_children' do
     let(:vm)                { FactoryBot.create(:vm_vmware, :name => 'vm') }
     let(:custom_button_1)   { FactoryBot.create(:custom_button, :applies_to => vm) }

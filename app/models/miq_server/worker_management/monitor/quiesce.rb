@@ -3,26 +3,14 @@ module MiqServer::WorkerManagement::Monitor::Quiesce
 
   def workers_quiesced?
     # do a subset of the monitor_workers loop to allow for graceful exit
-    my_server.heartbeat
-
-    check_not_responding
     check_pending_stop
     clean_worker_records
 
     return true if miq_workers.all?(&:is_stopped?)
+    return false unless quiesce_workers_loop_timeout?
 
-    if self.quiesce_workers_loop_timeout?
-      killed_workers = []
-      miq_workers.each do |w|
-        w.kill
-        worker_delete(w.pid)
-        killed_workers << w
-      end
-      miq_workers.delete(*killed_workers) unless killed_workers.empty?
-      return true
-    end
-
-    false
+    remove_workers(miq_workers, &:kill)
+    true
   end
 
   def quiesce_workers_loop
@@ -31,7 +19,7 @@ module MiqServer::WorkerManagement::Monitor::Quiesce
     @quiesce_started_on = Time.now.utc
     @worker_monitor_settings ||= {}
     @quiesce_loop_timeout = @worker_monitor_settings[:quiesce_loop_timeout] || 5.minutes
-    worker_monitor_poll = (@worker_monitor_settings[:poll] || 1.seconds).to_i_with_method
+    worker_monitor_poll = (@worker_monitor_settings[:poll] || 1.second).to_i_with_method
 
     miq_workers.each do |w|
       if w.containerized_worker?
@@ -43,7 +31,10 @@ module MiqServer::WorkerManagement::Monitor::Quiesce
 
     loop do
       my_server.reload # Reload from SQL this MiqServer AND its miq_workers association
-      break if self.workers_quiesced?
+      my_server.heartbeat
+
+      break if workers_quiesced?
+
       sleep worker_monitor_poll
     end
   end

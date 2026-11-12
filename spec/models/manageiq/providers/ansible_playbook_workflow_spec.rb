@@ -1,7 +1,8 @@
 RSpec.describe ManageIQ::Providers::AnsiblePlaybookWorkflow do
-  let(:job)     { described_class.create_job(*options).tap { |job| job.state = state } }
-  let(:options) { [{"ENV" => "VAR"}, {"arg1" => "val1"}, {:playbook_path => "/path/to/playbook"}, %w[192.0.2.0 192.0.2.1], {:verbosity => 3}] }
-  let(:state)   { "waiting_to_start" }
+  let(:job)        { described_class.create_job(*options, **job_kwargs).tap { |job| job.state = state } }
+  let(:options)    { [{"ENV" => "VAR"}, {"arg1" => "val1"}, {:playbook_path => "/path/to/playbook"}, %w[192.0.2.0 192.0.2.1]] }
+  let(:job_kwargs) { {:verbosity => 3} }
+  let(:state)      { "waiting_to_start" }
 
   context ".create_job" do
     it "leaves job waiting to start" do
@@ -118,7 +119,7 @@ RSpec.describe ManageIQ::Providers::AnsiblePlaybookWorkflow do
     end
 
     context "with configuration_script_source_id + playbook_relative_path" do
-      let(:options) { [{"ENV" => "VAR"}, {"arg1" => "val1"}, {:configuration_script_source_id => css.id, :playbook_relative_path => playbook_relative_path}, %w[192.0.2.0 192.0.2.1], :poll_interval => 5.minutes] }
+      let(:options) { [{"ENV" => "VAR"}, {"arg1" => "val1"}, {:configuration_script_source_id => css.id, :playbook_relative_path => playbook_relative_path}, %w[192.0.2.0 192.0.2.1], {:poll_interval => 5.minutes}] }
 
       it "will checkout the git repository to a temp dir before proceeding" do
         expect_any_instance_of(ManageIQ::Providers::EmbeddedAnsible::AutomationManager::ConfigurationScriptSource).to receive(:checkout_git_repository)
@@ -132,7 +133,7 @@ RSpec.describe ManageIQ::Providers::AnsiblePlaybookWorkflow do
     end
 
     context "with neither playbook_path nor a configuration_script_source_id, playbook_relative_path pair" do
-      let(:options) { [{"ENV" => "VAR"}, {"arg1" => "val1"}, {}, %w[192.0.2.0 192.0.2.1], :poll_interval => 5.minutes] }
+      let(:options) { [{"ENV" => "VAR"}, {"arg1" => "val1"}, {}, %w[192.0.2.0 192.0.2.1], {:poll_interval => 5.minutes}] }
 
       it "fails" do
         expect(job).to_not receive(:queue_signal).with(:execute)
@@ -142,7 +143,7 @@ RSpec.describe ManageIQ::Providers::AnsiblePlaybookWorkflow do
     end
 
     context "with only configuration_script_source_id" do
-      let(:options) { [{"ENV" => "VAR"}, {"arg1" => "val1"}, {:configuration_script_source_id => css.id}, %w[192.0.2.0 192.0.2.1], :poll_interval => 5.minutes] }
+      let(:options) { [{"ENV" => "VAR"}, {"arg1" => "val1"}, {:configuration_script_source_id => css.id}, %w[192.0.2.0 192.0.2.1], {:poll_interval => 5.minutes}] }
 
       it "fails" do
         expect(job).to_not receive(:queue_signal).with(:execute)
@@ -152,7 +153,7 @@ RSpec.describe ManageIQ::Providers::AnsiblePlaybookWorkflow do
     end
 
     context "with only playbook_relative_path" do
-      let(:options) { [{"ENV" => "VAR"}, {"arg1" => "val1"}, {:playbook_relative_path => playbook_relative_path}, %w[192.0.2.0 192.0.2.1], :poll_interval => 5.minutes] }
+      let(:options) { [{"ENV" => "VAR"}, {"arg1" => "val1"}, {:playbook_relative_path => playbook_relative_path}, %w[192.0.2.0 192.0.2.1], {:poll_interval => 5.minutes}] }
 
       it "fails" do
         expect(job).to_not receive(:queue_signal).with(:execute)
@@ -166,21 +167,28 @@ RSpec.describe ManageIQ::Providers::AnsiblePlaybookWorkflow do
     let(:state) { "execute" }
     let(:response_async) { Ansible::Runner::ResponseAsync.new(:base_dir => "/path/to/results") }
 
-    it "ansible-runner succeeds" do
-      response_async = Ansible::Runner::ResponseAsync.new(:base_dir => "/path/to/results")
+    it "forwards the options to Ansible::Runner parameters" do
       runner_options = [
+        %w[192.0.2.0 192.0.2.1],
+        [],
         {"ENV" => "VAR"},
         {"arg1" => "val1"},
-        "/path/to/playbook",
-        {
+        # NOTE: The following are actually keyword args, but RSpec sees them as a Hash
+        a_hash_including(
           :become_enabled => false,
-          :hosts          => %w[192.0.2.0 192.0.2.1],
-          :credentials    => [],
+          :playbook       => "/path/to/playbook",
           :verbosity      => 3
-        }
+        )
       ]
 
-      expect(Ansible::Runner).to receive(:run_async).with(*runner_options).and_return(response_async)
+      expect(Ansible::Runner).to receive(:run_via_cli).with(*runner_options).and_return(response_async)
+      expect(job).to receive(:queue_signal).with(:poll_runner, :deliver_on => nil)
+
+      job.signal(:execute)
+    end
+
+    it "ansible-runner succeeds" do
+      expect(Ansible::Runner).to receive(:run_via_cli).and_return(response_async)
       expect(job).to receive(:queue_signal).with(:poll_runner, :deliver_on => nil)
 
       job.signal(:execute)
@@ -189,7 +197,7 @@ RSpec.describe ManageIQ::Providers::AnsiblePlaybookWorkflow do
     end
 
     it "ansible-runner fails" do
-      expect(Ansible::Runner).to receive(:run_async).and_return(nil)
+      expect(Ansible::Runner).to receive(:run_via_cli).and_return(nil)
       expect(job).to receive(:queue_signal).with(:abort, "Failed to run ansible playbook", "error", :deliver_on => nil)
 
       job.signal(:execute)
@@ -211,7 +219,7 @@ RSpec.describe ManageIQ::Providers::AnsiblePlaybookWorkflow do
     it "ansible-runner completed" do
       expect(response_async).to receive(:running?).and_return(false)
 
-      response = Ansible::Runner::Response.new(response_async.dump.merge(:return_code => 0))
+      response = Ansible::Runner::Response.new(:return_code => 0, **response_async.dump)
       expect(response_async).to receive(:response).and_return(response)
       expect(job).to receive(:queue_signal).with(:post_execute, :deliver_on => nil)
 
@@ -240,8 +248,8 @@ RSpec.describe ManageIQ::Providers::AnsiblePlaybookWorkflow do
     end
 
     context "deliver_on" do
-      let(:options) { [{"ENV" => "VAR"}, {"arg1" => "val1"}, {:playbook_path => "/path/to/playbook"}, %w[192.0.2.0 192.0.2.1], :poll_interval => 5.minutes] }
-
+      let(:options) { [{"ENV" => "VAR"}, {"arg1" => "val1"}, {:playbook_path => "/path/to/playbook"}, %w[192.0.2.0 192.0.2.1]] }
+      let(:job_kwargs) { {:poll_interval => 5.minutes} }
       it "uses the option to queue poll_runner" do
         now = Time.now.utc
         allow(Time).to receive(:now).and_return(now)

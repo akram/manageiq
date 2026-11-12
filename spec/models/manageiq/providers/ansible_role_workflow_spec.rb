@@ -1,7 +1,8 @@
 RSpec.describe ManageIQ::Providers::AnsibleRoleWorkflow do
-  let(:job)          { described_class.create_job(*options).tap { |job| job.state = state } }
-  let(:role_options) { {:role_name => 'role_name', :roles_path => '/path/to/role', :role_skip_facts => true } }
-  let(:options)      { [{"ENV" => "VAR"}, {"arg1" => "val1"}, role_options, {:verbosity => 4}] }
+  let(:job)          { described_class.create_job(*options, **job_kwargs).tap { |job| job.state = state } }
+  let(:role_options) { {:role_name => 'role_name', :roles_path => '/path/to/role', :role_skip_facts => true} }
+  let(:options)      { [{"ENV" => "VAR"}, {"arg1" => "val1"}, role_options] }
+  let(:job_kwargs)   { {:verbosity => 4} }
   let(:state)        { "waiting_to_start" }
 
   context ".create_job" do
@@ -118,7 +119,8 @@ RSpec.describe ManageIQ::Providers::AnsibleRoleWorkflow do
     end
 
     context "with configuration_script_source_id + roles_relative_path" do
-      let(:options) { [{"ENV" => "VAR"}, {"arg1" => "val1"}, {:role_name => 'role_name', :configuration_script_source_id => css.id, :roles_relative_path => roles_relative_path}, %w[192.0.2.0 192.0.2.1], :poll_interval => 5.minutes] }
+      let(:options) { [{"ENV" => "VAR"}, {"arg1" => "val1"}, {:role_name => 'role_name', :configuration_script_source_id => css.id, :roles_relative_path => roles_relative_path}, %w[192.0.2.0 192.0.2.1]] }
+      let(:job_kwargs) { {:poll_interval => 5.minutes} }
 
       it "will checkout the git repository to a temp dir before proceeding" do
         expect_any_instance_of(ManageIQ::Providers::EmbeddedAnsible::AutomationManager::ConfigurationScriptSource).to receive(:checkout_git_repository)
@@ -140,7 +142,8 @@ RSpec.describe ManageIQ::Providers::AnsibleRoleWorkflow do
     end
 
     context "without role_name" do
-      let(:options) { [{"ENV" => "VAR"}, {"arg1" => "val1"}, {}, %w[192.0.2.0 192.0.2.1], :poll_interval => 5.minutes] }
+      let(:options) { [{"ENV" => "VAR"}, {"arg1" => "val1"}, {}, %w[192.0.2.0 192.0.2.1]] }
+      let(:job_kwargs) { {:poll_interval => 5.minutes} }
 
       it "fails" do
         expect(job).to_not receive(:queue_signal).with(:execute)
@@ -150,7 +153,8 @@ RSpec.describe ManageIQ::Providers::AnsibleRoleWorkflow do
     end
 
     context "with only configuration_script_source_id" do
-      let(:options) { [{"ENV" => "VAR"}, {"arg1" => "val1"}, {:role_name => 'role_name', :configuration_script_source_id => css.id}, %w[192.0.2.0 192.0.2.1], :poll_interval => 5.minutes] }
+      let(:options) { [{"ENV" => "VAR"}, {"arg1" => "val1"}, {:role_name => 'role_name', :configuration_script_source_id => css.id}, %w[192.0.2.0 192.0.2.1]] }
+      let(:job_kwargs) { {:poll_interval => 5.minutes} }
 
       it "fails" do
         expect(job).to_not receive(:queue_signal).with(:execute)
@@ -160,8 +164,8 @@ RSpec.describe ManageIQ::Providers::AnsibleRoleWorkflow do
     end
 
     context "with only roles_relative_path" do
-      let(:options) { [{"ENV" => "VAR"}, {"arg1" => "val1"}, {:role_name => 'role_name', :roles_relative_path => roles_relative_path}, %w[192.0.2.0 192.0.2.1], :poll_interval => 5.minutes] }
-
+      let(:options) { [{"ENV" => "VAR"}, {"arg1" => "val1"}, {:role_name => 'role_name', :roles_relative_path => roles_relative_path}, %w[192.0.2.0 192.0.2.1]] }
+      let(:job_kwargs) { {:poll_interval => 5.minutes} }
       it "fails" do
         expect(job).to_not receive(:queue_signal).with(:execute)
 
@@ -174,19 +178,28 @@ RSpec.describe ManageIQ::Providers::AnsibleRoleWorkflow do
     let(:state) { "execute" }
     let(:response_async) { Ansible::Runner::ResponseAsync.new(:base_dir => "/path/to/results") }
 
-    it "ansible-runner succeeds" do
-      response_async = Ansible::Runner::ResponseAsync.new(:base_dir => "/path/to/results")
+    it "forwards the options to Ansible::Runner parameters" do
       runner_options = [
+        ["localhost"],
+        [],
         {"ENV" => "VAR"},
         {"arg1" => "val1"},
-        "role_name",
-        {
+        # NOTE: The following are actually keyword args, but RSpec sees them as a Hash
+        a_hash_including(
+          :role            => "role_name",
           :roles_path      => "/path/to/role",
           :role_skip_facts => true
-        }
+        )
       ]
 
-      expect(Ansible::Runner).to receive(:run_role_async).with(*runner_options).and_return(response_async)
+      expect(Ansible::Runner).to receive(:run_via_cli).with(*runner_options).and_return(response_async)
+      expect(job).to receive(:queue_signal).with(:poll_runner, :deliver_on => nil)
+
+      job.signal(:execute)
+    end
+
+    it "ansible-runner succeeds" do
+      expect(Ansible::Runner).to receive(:run_via_cli).and_return(response_async)
       expect(job).to receive(:queue_signal).with(:poll_runner, :deliver_on => nil)
 
       job.signal(:execute)
@@ -196,16 +209,15 @@ RSpec.describe ManageIQ::Providers::AnsibleRoleWorkflow do
 
     it "doesn't queue the next state when running in pods with a success response" do
       allow(MiqEnvironment::Command).to receive(:is_podified?).and_return(true)
-      response_async = Ansible::Runner::ResponseAsync.new(:base_dir => "/path/to/results")
 
-      expect(Ansible::Runner).to receive(:run_role_async).and_return(response_async)
+      expect(Ansible::Runner).to receive(:run_via_cli).and_return(response_async)
       expect(job).to receive(:signal).with(:poll_runner)
 
       job.execute
     end
 
     it "ansible-runner fails" do
-      expect(Ansible::Runner).to receive(:run_role_async).and_return(nil)
+      expect(Ansible::Runner).to receive(:run_via_cli).and_return(nil)
       expect(job).to receive(:queue_signal).with(:abort, "Failed to run ansible role", "error", :deliver_on => nil)
 
       job.signal(:execute)
@@ -213,7 +225,7 @@ RSpec.describe ManageIQ::Providers::AnsibleRoleWorkflow do
 
     it "doesn't queue the next state when running in pods with a failure response" do
       allow(MiqEnvironment::Command).to receive(:is_podified?).and_return(true)
-      expect(Ansible::Runner).to receive(:run_role_async).and_return(nil)
+      expect(Ansible::Runner).to receive(:run_via_cli).and_return(nil)
       expect(job).to receive(:signal).with(:abort, "Failed to run ansible role", "error")
 
       job.execute
@@ -241,7 +253,7 @@ RSpec.describe ManageIQ::Providers::AnsibleRoleWorkflow do
     it "ansible-runner completed" do
       expect(response_async).to receive(:running?).and_return(false)
 
-      response = Ansible::Runner::Response.new(response_async.dump.merge(:return_code => 0))
+      response = Ansible::Runner::Response.new(:return_code => 0, **response_async.dump)
       expect(response_async).to receive(:response).and_return(response)
       expect(job).to receive(:queue_signal).with(:post_execute, :deliver_on => nil)
 
@@ -252,7 +264,7 @@ RSpec.describe ManageIQ::Providers::AnsibleRoleWorkflow do
       allow(MiqEnvironment::Command).to receive(:is_podified?).and_return(true)
       expect(response_async).to receive(:running?).and_return(false)
 
-      response = Ansible::Runner::Response.new(response_async.dump.merge(:return_code => 0))
+      response = Ansible::Runner::Response.new(:return_code => 0, **response_async.dump)
       expect(response_async).to receive(:response).and_return(response)
       expect(job).to receive(:signal).with(:post_execute)
 
@@ -276,7 +288,7 @@ RSpec.describe ManageIQ::Providers::AnsibleRoleWorkflow do
       expect(job).to receive(:sleep).with(1)
 
       # Second loop we get a response and signal the post_execute state
-      response = Ansible::Runner::Response.new(response_async.dump.merge(:return_code => 0))
+      response = Ansible::Runner::Response.new(:return_code => 0, **response_async.dump)
       expect(response_async).to receive(:response).and_return(response)
       expect(job).to receive(:signal).with(:post_execute)
 
@@ -309,7 +321,8 @@ RSpec.describe ManageIQ::Providers::AnsibleRoleWorkflow do
     end
 
     context "deliver_on" do
-      let(:options) { [{"ENV" => "VAR"}, {"arg1" => "val1"}, {:roles_path => "/path/to/role"}, :poll_interval => 5.minutes] }
+      let(:options) { [{"ENV" => "VAR"}, {"arg1" => "val1"}, {:roles_path => "/path/to/role"}] }
+      let(:job_kwargs) { {:poll_interval => 5.minutes} }
 
       it "uses the option to queue poll_runner" do
         now = Time.now.utc

@@ -6,27 +6,21 @@
 #     supports :publish
 #     supports_not :fake, :reason => 'We keep it real'
 #     supports :archive do
-#       unsupported_reason_add(:archive, 'It is too good') if featured?
+#       'It is too good' if featured?
 #     end
 #   end
 #
 # To make a feature conditionally supported, pass a block to the +supports+ method.
 # The block is evaluated in the context of the instance.
-# If you call the private method +unsupported_reason_add+ with the feature
-# and a reason, then the feature will be unsupported and the reason will be
-# accessible through
+# If a feature is not supported, return a string for the reason. A nil means it is supported
+# The reason will be accessible through
 #
 #   instance.unsupported_reason(:feature)
 #
-# The above allows you to call +supports_feature?+ or +supports?(feature) :methods
-# on the Class and Instance
-#
-#   Post.supports_publish?                       # => true
 #   Post.supports?(:publish)                     # => true
-#   Post.new.supports_publish?                   # => true
-#   Post.supports_fake?                          # => false
-#   Post.supports_archive?                       # => true
-#   Post.new(featured: true).supports_archive?   # => false
+#   Post.new.supports?(:publish)                 # => true
+#   Post.supports?(:archive)                     # => true
+#   Post.new(featured: true).supports?(:archive) # => false
 #
 # To get a reason why a feature is unsupported use the +unsupported_reason+ method
 #
@@ -51,69 +45,60 @@
 module SupportsFeatureMixin
   extend ActiveSupport::Concern
 
-  COMMON_FEATURES = %i[create delete destroy refresh_ems update].freeze
-
   # Whenever this mixin is included we define all features as unsupported by default.
   # This way we can query for every feature
   included do
-    COMMON_FEATURES.each do |feature|
-      supports_not(feature)
-    end
-
-    private_class_method :unsupported
-    private_class_method :unsupported_reason_add
-    private_class_method :define_supports_feature_methods
+    class_attribute :supports_features, :instance_writer => false, :instance_reader => false, :default => {}
   end
 
-  def self.reason_or_default(reason)
-    reason.present? ? reason : _("Feature not available/supported")
+  def self.default_supports_reason
+    _("Feature not available/supported")
   end
 
   # query instance for the reason why the feature is unsupported
   def unsupported_reason(feature)
-    feature = feature.to_sym
-    public_send("supports_#{feature}?") unless unsupported.key?(feature)
-    unsupported[feature]
+    self.class.unsupported_reason(feature, :instance => self)
   end
 
   # query the instance if the feature is supported or not
   def supports?(feature)
-    public_send("supports_#{feature}?")
-  end
-
-  # query the instance if a feature is generally known
-  def feature_known?(feature)
-    self.class.feature_known?(feature)
+    !unsupported_reason(feature)
   end
 
   private
 
-  # used inside a +supports+ block to add a reason why the feature is not supported
-  # just adding a reason will make the feature unsupported
-  def unsupported_reason_add(feature, reason = nil)
-    feature = feature.to_sym
-    unsupported[feature] = SupportsFeatureMixin.reason_or_default(reason)
-  end
-
-  def unsupported
-    @unsupported ||= {}
-  end
-
   class_methods do
     # This is the DSL used a class level to define what is supported
     def supports(feature, &block)
-      define_supports_feature_methods(feature, &block)
+      self.supports_features = supports_features.merge(feature.to_sym => block || true)
     end
 
     # supports_not does not take a block, because its never supported
     # and not conditionally supported
     def supports_not(feature, reason: nil)
-      define_supports_feature_methods(feature, :is_supported => false, :reason => reason)
+      self.supports_features = supports_features.merge(feature.to_sym => reason.presence || false)
+    end
+
+    def supports?(feature)
+      !unsupported_reason(feature)
     end
 
     # query the class if the feature is supported or not
-    def supports?(feature)
-      public_send("supports_#{feature}?")
+    def unsupported_reason(feature, instance: self)
+      # undeclared features are not supported
+      value = supports_features[feature.to_sym]
+      if value.respond_to?(:call)
+        begin
+          # for class level supports, blocks are not evaluated and assumed to be true
+          result = instance.instance_eval(&value) unless instance.kind_of?(Class)
+          result if result.kind_of?(String)
+        rescue => e
+          _log.log_backtrace(e)
+          "Internal Error: #{e.message}"
+        end
+      elsif value != true
+        value || SupportsFeatureMixin.default_supports_reason
+      end
     end
 
     # all subclasses that are considered for supporting features
@@ -125,6 +110,10 @@ module SupportsFeatureMixin
       supported_subclasses.select { |subclass| subclass.supports?(feature) }
     end
 
+    def types_supporting(feature)
+      subclasses_supporting(feature).map(&:name)
+    end
+
     # Provider classes that support this feature
     def provider_classes_supporting(feature)
       subclasses_supporting(feature).map(&:module_parent)
@@ -132,7 +121,9 @@ module SupportsFeatureMixin
 
     # scope to query all those classes that support a particular feature
     def supporting(feature)
-      where(:type => subclasses_supporting(feature).map(&:name))
+      # First find all instances where the class supports <feature> then select instances
+      # which also support <feature> (e.g. the supports block does not add an unsupported_reason)
+      where(:type => types_supporting(feature)).select { |instance| instance.supports?(feature) }
     end
 
     # Providers that support this feature
@@ -141,57 +132,6 @@ module SupportsFeatureMixin
     #   Host.providers_supporting(feature) # => [Ems]
     def providers_supporting(feature)
       ExtManagementSystem.where(:type => provider_classes_supporting(feature).map(&:name))
-    end
-
-    # query the class for the reason why something is unsupported
-    def unsupported_reason(feature)
-      feature = feature.to_sym
-      public_send("supports_#{feature}?") unless unsupported.key?(feature)
-      unsupported[feature]
-    end
-
-    def unsupported
-      # This is a class variable and it might be modified during runtime
-      # because we do not eager load all classes at boot time, so it needs to be thread safe
-      @unsupported ||= Concurrent::Hash.new
-    end
-
-    # use this for making a class not support a feature
-    def unsupported_reason_add(feature, reason = nil)
-      feature = feature.to_sym
-      unsupported[feature] = SupportsFeatureMixin.reason_or_default(reason)
-    end
-
-    def define_supports_feature_methods(feature, is_supported: true, reason: nil, &block)
-      method_name = "supports_#{feature}?"
-      feature = feature.to_sym
-
-      # silence potential redefinition warnings
-      silence_warnings do
-        # defines the method on the instance
-        define_method(method_name) do
-          unsupported.delete(feature)
-          if block_given?
-            begin
-              instance_eval(&block)
-            rescue => e
-              _log.log_backtrace(e)
-              unsupported_reason_add(feature, "Internal Error: #{e.message}")
-            end
-          else
-            unsupported_reason_add(feature, reason) unless is_supported
-          end
-          !unsupported.key?(feature)
-        end
-
-        # defines the method on the class
-        define_singleton_method(method_name) do
-          unsupported.delete(feature)
-          # TODO: durandom - make reason evaluate in class context, to e.g. include the name of a subclass (.to_proc?)
-          unsupported_reason_add(feature, reason) unless is_supported
-          !unsupported.key?(feature)
-        end
-      end
     end
   end
 end

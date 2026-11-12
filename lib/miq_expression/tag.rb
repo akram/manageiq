@@ -13,6 +13,7 @@ class MiqExpression::Tag < MiqExpression::Target
 
   def self.parse(field)
     return unless field.include?('managed') || field.include?('user_tag')
+
     parsed_params = parse_params(field) || return
     managed = parsed_params[:namespace] == self::MANAGED_NAMESPACE
     new(parsed_params[:model_name], parsed_params[:associations], parsed_params[:column], managed)
@@ -28,10 +29,6 @@ class MiqExpression::Tag < MiqExpression::Target
     "#{[model, *associations, base_namespace].compact.join(".")}-#{column}"
   end
 
-  def numeric?
-    false
-  end
-
   def column_type
     :string
   end
@@ -40,11 +37,8 @@ class MiqExpression::Tag < MiqExpression::Target
     column_type
   end
 
-  def attribute_supported_by_sql?
-    reflection_supported_by_sql?
-  rescue ArgumentError
-    # the association chain is not legal, so no, it is not supported by sql
-    false
+  def tag?
+    true
   end
 
   def report_column
@@ -55,7 +49,11 @@ class MiqExpression::Tag < MiqExpression::Target
   # please avoid using it
   # for tags, the tag tables are joined to the table's id
   def arel_attribute
-    target&.arel_attribute("id", arel_table)
+    target && target.arel_table[:id, arel_table]
+  end
+
+  def valid?
+    !!target
   end
 
   private

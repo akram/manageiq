@@ -15,7 +15,7 @@ class CloudSubnet < ApplicationRecord
   belongs_to :parent_cloud_subnet, :class_name => "::CloudSubnet"
 
   has_many :cloud_subnet_network_ports, :dependent => :destroy
-  has_many :network_ports, :through => :cloud_subnet_network_ports, :dependent => :destroy
+  has_many :network_ports, :through => :cloud_subnet_network_ports
   has_many :vms, -> { distinct }, :through => :network_ports, :source => :device, :source_type => 'VmOrTemplate'
   has_many :cloud_subnets, :foreign_key => :parent_cloud_subnet_id
   has_many :security_groups, :dependent => :nullify
@@ -33,8 +33,8 @@ class CloudSubnet < ApplicationRecord
   virtual_column :network_type,     :type => :string
 
   # Define all getters and setters for extra_attributes related virtual columns
-  %i(allocation_pools host_routes ip_version subnetpool_id network_type).each do |action|
-    define_method("#{action}=") do |value|
+  %i[allocation_pools host_routes ip_version subnetpool_id network_type].each do |action|
+    define_method(:"#{action}=") do |value|
       extra_attributes_save(action, value)
     end
 
@@ -84,10 +84,10 @@ class CloudSubnet < ApplicationRecord
 
   def extra_attributes_save(key, value)
     self.extra_attributes = {} if extra_attributes.blank?
-    self.extra_attributes[key] = value
+    extra_attributes[key] = value
   end
 
   def extra_attributes_load(key)
-    self.extra_attributes[key] unless extra_attributes.blank?
+    extra_attributes[key] if extra_attributes.present?
   end
 end

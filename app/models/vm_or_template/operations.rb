@@ -1,10 +1,10 @@
 module VmOrTemplate::Operations
   extend ActiveSupport::Concern
 
-  include_concern 'Configuration'
-  include_concern 'Power'
-  include_concern 'Relocation'
-  include_concern 'Snapshot'
+  include Configuration
+  include Power
+  include Relocation
+  include Snapshot
 
   alias_method :ruby_clone, :clone
 
@@ -118,48 +118,41 @@ module VmOrTemplate::Operations
     $log.info(user_event)
   end
 
-  private
-
   #
   # UI button validation methods
   #
 
   included do
+    supports :action do
+      if orphaned?
+        _("The VM is orphaned")
+      elsif archived?
+        _("The VM is archived")
+      end
+    end
+
     supports :control do
-      msg = if retired?
-              _('The VM is retired')
-            elsif template?
-              _('The VM is a template')
-            elsif terminated?
-              _('The VM is terminated')
-            elsif !has_required_host?
-              _('The VM is not connected to a Host')
-            elsif disconnected?
-              _('The VM does not have a valid connection state')
-            elsif !has_active_ems?
-              _("The VM is not connected to an active Provider")
-            end
-      unsupported_reason_add(:control, msg) if msg
+      if retired?
+        _('The VM is retired')
+      elsif template?
+        _('The VM is a template')
+      elsif terminated?
+        _('The VM is terminated')
+      elsif !has_required_host?
+        _('The VM is not connected to a Host')
+      elsif disconnected?
+        _('The VM does not have a valid connection state')
+      elsif !has_active_ems?
+        _("The VM is not connected to an active Provider")
+      end
     end
-    supports_not :clone
-    supports_not :quick_stats
-    supports_not :rename
-    supports_not :terminate
-  end
 
-  def validate_vm_control_powered_on
-    validate_vm_control_power_state(true)
-  end
-
-  def validate_vm_control_power_state(check_powered_on)
-    unless supports?(:control)
-      return {:available => false, :message => unsupported_reason(:control)}
+    supports :vm_control_powered_on do
+      if current_state != "on"
+        "The VM is not powered on"
+      else
+        unsupported_reason(:control)
+      end
     end
-    return {:available => true,   :message => nil}  if current_state.send(check_powered_on ? "==" : "!=", "on")
-    {:available => false,  :message => "The VM is#{" not" if check_powered_on} powered on"}
-  end
-
-  def validate_unsupported(message_prefix)
-    {:available => false, :message => "#{message_prefix} is not available for #{self.class.model_suffix} VM or Template."}
   end
 end

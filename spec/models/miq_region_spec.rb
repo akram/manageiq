@@ -10,10 +10,6 @@ RSpec.describe MiqRegion do
     ApplicationRecord.region_to_range(remote_region_number).first
   end
   context "after seeding" do
-    before do
-      MiqRegion.seed
-    end
-
     it "should increment naming sequence number after each call" do
       expect(MiqRegion.my_region.next_naming_sequence("namingtest$n{3}", "naming")).to eq(1)
       expect(MiqRegion.my_region.next_naming_sequence("namingtest$n{3}", "naming")).to eq(2)
@@ -23,7 +19,7 @@ RSpec.describe MiqRegion do
 
     context "with cloud and infra EMSes" do
       before do
-        _, _, zone = EvmSpecHelper.create_guid_miq_server_zone
+        zone = EvmSpecHelper.local_miq_server.zone
         ems_vmware = FactoryBot.create(:ems_vmware, :zone => zone)
         ems_openstack = FactoryBot.create(:ems_openstack, :zone => zone)
         ems_redhat = FactoryBot.create(:ems_redhat, :zone => zone)
@@ -48,6 +44,7 @@ RSpec.describe MiqRegion do
 
   context ".seed" do
     before do
+      MiqRegion.destroy_all
       @region_number = 99
       allow(MiqRegion).to receive_messages(:my_region_number => @region_number)
       MiqRegion.seed
@@ -125,8 +122,8 @@ RSpec.describe MiqRegion do
       let(:url) { "https://www.manageiq.org" }
       let!(:web_server) do
         FactoryBot.create(:miq_server, :has_active_webservices => true,
-                                        :hostname               => hostname,
-                                        :ipaddress              => ip)
+                                       :hostname               => hostname,
+                                       :ipaddress              => ip)
       end
 
       it "fetches the url from server" do
@@ -136,6 +133,17 @@ RSpec.describe MiqRegion do
       it "fetches the url from the setting" do
         Vmdb::Settings.save!(web_server, :webservices => {:url => url})
         expect(region.remote_ws_url).to eq(url)
+      end
+
+      context "podified" do
+        before do
+          expect(MiqEnvironment::Command).to receive(:is_podified?).and_return(true)
+          expect(ENV).to receive(:fetch).with("APPLICATION_DOMAIN", nil).and_return("manageiq.apps.mycluster.com")
+        end
+
+        it "returns the applicationDomain from the CR" do
+          expect(region.remote_ws_url).to eq("https://manageiq.apps.mycluster.com")
+        end
       end
     end
 
@@ -154,8 +162,8 @@ RSpec.describe MiqRegion do
       let(:url) { "http://localhost:3000" }
       let!(:ui_server) do
         FactoryBot.create(:miq_server, :has_active_userinterface => true,
-                                        :hostname                 => hostname,
-                                        :ipaddress                => ip)
+                                       :hostname                 => hostname,
+                                       :ipaddress                => ip)
       end
 
       it "fetches the url from server" do
@@ -165,6 +173,17 @@ RSpec.describe MiqRegion do
       it "fetches the url from the setting" do
         Vmdb::Settings.save!(ui_server, :ui => {:url => url})
         expect(region.remote_ui_url).to eq(url)
+      end
+
+      context "podified" do
+        before do
+          expect(MiqEnvironment::Command).to receive(:is_podified?).and_return(true)
+          expect(ENV).to receive(:fetch).with("APPLICATION_DOMAIN", nil).and_return("manageiq.apps.mycluster.com")
+        end
+
+        it "returns the applicationDomain from the CR" do
+          expect(region.remote_ui_url).to eq("https://manageiq.apps.mycluster.com")
+        end
       end
     end
 

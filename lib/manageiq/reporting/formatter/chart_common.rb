@@ -3,7 +3,12 @@ module ManageIQ
     module Formatter
       module ChartCommon
         def slice_legend(string, limit = LEGEND_LENGTH)
-          string.to_s.gsub(/\n/, ' ').truncate(limit)
+          case string
+          when Date, Time, DateTime, ActiveSupport::TimeWithZone
+            string.iso8601(3)
+          else
+            string.to_s.tr("\n", ' ').truncate(limit)
+          end
         end
 
         def nonblank_or_default(value)
@@ -23,6 +28,7 @@ module ManageIQ
 
         def build_document_body
           return no_records_found_chart if mri.table.nil? || mri.table.data.blank?
+
           maxcols = 8
           fun = case graph_options[:chart_type]
                 when :performance then :build_performance_chart # performance chart (time based)
@@ -43,22 +49,15 @@ module ManageIQ
           tz = mri.get_time_zone(Time.zone.name)
 
           mri.graph[:columns].each_with_index do |col, col_idx|
-
             next if col_idx >= maxcols
+
             allnil = true
             tip = graph_options[:trendtip] if col.starts_with?("trend") && graph_options[:trendtip]
             categories = []                      # Store categories and series counts in an array of arrays
             series = series_class.new
             mri.table.data.each_with_index do |r, d_idx|
               rec_time = r["timestamp"].in_time_zone(tz)
-
-              if mri.db.include?("Daily") || (mri.where_clause && mri.where_clause.include?("daily"))
-                categories.push(rec_time.month.to_s + "/" + rec_time.day.to_s)
-              elsif mri.extras[:realtime] == true
-                categories.push(rec_time.strftime("%H:%M:%S"))
-              else
-                categories.push(rec_time.hour.to_s + ":00")
-              end
+              categories.push(rec_time)
               val = r[col]
 
               if d_idx == mri.table.data.length - 1 && !tip.nil?
@@ -79,6 +78,7 @@ module ManageIQ
 
         def rounded_value(value)
           return 0 if value.blank?
+
           value.round(graph_options[:decimals] || 0)
         end
 
@@ -92,6 +92,7 @@ module ManageIQ
             cat = cat_cnt > 6 ? 'Others' : r["resource_name"]
             val = rounded_value(r[col])
             next if val == 0
+
             if cat.starts_with?("Others") && categories[-1].starts_with?("Others") # Are we past the top 10?
               categories[-1] = "Others"
               series.add_to_value(-1, val) # Accumulate the series value
@@ -229,7 +230,7 @@ module ManageIQ
               a.push(:value   => hash1[val2[0]],
                      :tooltip => "#{key1} / #{val2[0]}")
             end
-            val2[0] = val2[0].to_s.gsub(/\\/, ' \ ')
+            val2[0] = val2[0].to_s.gsub("\\", ' \ ')
             add_series(val2[0].to_s, series)
           end
 
@@ -394,11 +395,11 @@ module ManageIQ
             series.push(:value   => other[val2],
                         :tooltip => "Other / #{val2}") if show_other
             label = val2 if val2.kind_of?(String)
-            label = label.to_s.gsub(/\\/, ' \ ')
+            label = label.to_s.gsub("\\", ' \ ')
             label = _('no value') if label.blank?
             add_series(label, series)
           end
-          groups.keys.collect { |k| k.blank? ? _('no value') : k }
+          groups.keys.collect { |k| (k.presence || _('no value')) }
         end
 
         def pie_type?
@@ -452,11 +453,12 @@ module ManageIQ
 
         # Utilization timestamp charts
         def build_util_ts_chart(_maxcols)
-          build_util_ts_chart_column if %w(Column ColumnThreed).index(mri.graph[:type])
+          build_util_ts_chart_column if %w[Column ColumnThreed].index(mri.graph[:type])
         end
 
         def build_reporting_chart_numeric(_maxcols)
           return no_records_found_chart(_('Invalid chart definition')) unless mri.graph[:column].present?
+
           if mri.group.nil?
             build_numeric_chart_simple
           else

@@ -1,18 +1,13 @@
 require 'resolv'
 
 class MiqServer < ApplicationRecord
-  include_concern 'AtStartup'
-  include_concern 'ServerSmartProxy'
-  include_concern 'ConfigurationManagement'
-  include_concern 'EnvironmentManagement'
-  include_concern 'LogManagement'
-  include_concern 'QueueManagement'
-  include_concern 'RoleManagement'
-  include_concern 'StatusManagement'
-
-  require_nested :ServerMonitor
-  require_nested :WorkerManagement
-
+  include AtStartup
+  include ServerSmartProxy
+  include ConfigurationManagement
+  include EnvironmentManagement
+  include QueueManagement
+  include RoleManagement
+  include StatusManagement
   include UuidMixin
   acts_as_miq_taggable
   include MiqPolicyMixin
@@ -33,9 +28,9 @@ class MiqServer < ApplicationRecord
   default_value_for(:zone) { Zone.default_zone }
 
   scope :active_miq_servers, -> { where(:status => STATUSES_ACTIVE) }
-  scope :recently_active,    -> { where(:last_heartbeat => 10.minutes.ago.utc...Time.now.utc) }
+  scope :recently_active,    -> { where(:last_heartbeat => 10.minutes.ago.utc..) }
   scope :with_zone_id, ->(zone_id) { where(:zone_id => zone_id) }
-  virtual_delegate :description, :to => :zone, :prefix => true, :allow_nil => true, :type => :string
+  virtual_attribute :zone_description, :string, :through => :zone, :source => :description
 
   validate :validate_zone_not_maintenance?
   validate :zone_unchanged_in_pods, :on => :update
@@ -57,7 +52,7 @@ class MiqServer < ApplicationRecord
   RESTART_EXIT_STATUS = 123
 
   def validate_zone_not_maintenance?
-    errors.add(:zone, N_('cannot be maintenance zone')) if zone == Zone.maintenance_zone
+    errors.add(:zone, N_('cannot be maintenance zone')) if zone&.maintenance?
   end
 
   def hostname
@@ -96,7 +91,7 @@ class MiqServer < ApplicationRecord
   end
 
   def self.pidfile
-    @pidfile ||= "#{Rails.root}/tmp/pids/evm.pid"
+    @pidfile ||= "#{Rails.root.join("tmp/pids/evm.pid")}"
   end
 
   def self.running?
@@ -116,7 +111,7 @@ class MiqServer < ApplicationRecord
   end
 
   def validate_is_deleteable
-    unless self.is_deleteable?
+    unless is_deleteable?
       _log.error(@errors.full_messages)
       throw :abort
     end
@@ -171,6 +166,10 @@ class MiqServer < ApplicationRecord
     ::Settings.server.server_log_frequency.to_i_with_method
   end
 
+  def server_role_monitor_frequency
+    ::Settings.server.server_role_monitor_frequency.to_i_with_method
+  end
+
   def worker_dequeue_frequency
     ::Settings.server.worker_dequeue_frequency.to_i_with_method
   end
@@ -201,10 +200,12 @@ class MiqServer < ApplicationRecord
 
     Benchmark.realtime_block(:server_monitor) do
       server_monitor.monitor_servers
-      monitor_server_roles if self.is_master?
+      monitor_server_roles if is_master?
+      messaging_health_check
     end if threshold_exceeded?(:server_monitor_frequency, now)
 
     Benchmark.realtime_block(:log_active_servers)      { log_active_servers }                     if threshold_exceeded?(:server_log_frequency, now)
+    Benchmark.realtime_block(:role_monitor)            { monitor_active_roles }                   if threshold_exceeded?(:server_role_monitor_frequency, now)
     Benchmark.realtime_block(:worker_monitor)          { worker_manager.monitor_workers }         if threshold_exceeded?(:worker_monitor_frequency, now)
     Benchmark.realtime_block(:worker_dequeue)          { worker_manager.populate_queue_messages } if threshold_exceeded?(:worker_dequeue_frequency, now)
     monitor_myself
@@ -218,9 +219,7 @@ class MiqServer < ApplicationRecord
 
     begin
       _log.info("Reconnecting to database after error...")
-      # Remove the connection and establish a new one since reconnect! doesn't always play nice with SSL postgresql connections
-      spec_name = ActiveRecord::Base.connection_specification_name
-      ActiveRecord::Base.establish_connection(ActiveRecord::Base.remove_connection(spec_name))
+      ActiveRecord::Base.postgresql_ssl_friendly_base_reconnect
     rescue Exception => err
       _log.error("#{err.message}, during reconnect!")
     else
@@ -245,7 +244,7 @@ class MiqServer < ApplicationRecord
   end
 
   def stop(sync = false)
-    return if self.stopped?
+    return if stopped?
 
     shutdown_and_exit_queue
     wait_for_stopped if sync
@@ -254,7 +253,8 @@ class MiqServer < ApplicationRecord
   def wait_for_stopped
     loop do
       reload
-      break if self.stopped?
+      break if stopped?
+
       sleep stop_poll
     end
   end
@@ -283,9 +283,9 @@ class MiqServer < ApplicationRecord
 
   def shutdown
     _log.info("initiated for #{format_full_log_msg}")
-    MiqEvent.raise_evm_event(self, "evm_server_stop")
-
     quiesce
+
+    MiqEvent.raise_evm_event(self, "evm_server_stop") rescue nil
   end
 
   def shutdown_and_exit(exit_status = 0)
@@ -322,10 +322,6 @@ class MiqServer < ApplicationRecord
     _("EVM Server (%{id})") % {:id => pid}
   end
 
-  def who_am_i
-    @who_am_i ||= "#{name} #{my_zone} #{self.class.name} #{id}"
-  end
-
   def database_application_name
     "MIQ|#{Process.pid}|#{compressed_id}|-|#{zone.compressed_id}|Server|#{zone.name}".truncate(64)
   end
@@ -349,13 +345,13 @@ class MiqServer < ApplicationRecord
   def is_deleteable?
     return true if MiqEnvironment::Command.is_podified?
 
-    if self.is_local?
+    if is_local?
       message = N_("Cannot delete currently used %{log_message}") % {:log_message => format_short_log_msg}
       @errors ||= ActiveModel::Errors.new(self)
       @errors.add(:base, message)
       return false
     end
-    return true if self.stopped?
+    return true if stopped?
 
     if is_recently_active?
       message = N_("Cannot delete recently active %{log_message}") % {:log_message => format_short_log_msg}
@@ -384,7 +380,8 @@ class MiqServer < ApplicationRecord
   end
 
   def logon_status
-    return :ready if self.started?
+    return :ready if started?
+
     started_on < (Time.now.utc - ::Settings.server.startup_timeout) ? :timed_out_starting : status.to_sym
   end
 
@@ -396,6 +393,74 @@ class MiqServer < ApplicationRecord
     workers = wcnt == 1 ? "worker" : "workers"
     message = "Waiting for #{wcnt} #{workers} to start"
     result.merge(:message => message)
+  end
+
+  def ui_hostname
+    if MiqEnvironment::Command.is_podified?
+      ENV.fetch("APPLICATION_DOMAIN", nil)
+    else
+      hostname || ipaddress
+    end
+  end
+
+  def ui_ipaddress
+    if MiqEnvironment::Command.is_podified?
+      nil
+    else
+      ipaddress
+    end
+  end
+
+  def ui_address(contact_with = :hostname)
+    if MiqEnvironment::Command.is_podified?
+      ENV.fetch("APPLICATION_DOMAIN", nil)
+    else
+      contact_with == :hostname ? ui_hostname : ui_ipaddress
+    end
+  end
+
+  def ui_url(contact_with = :hostname)
+    url_override = settings_for_resource.ui.url
+    return url_override if url_override
+
+    host = ui_address(contact_with)
+    return if host.nil?
+
+    URI::HTTPS.build(:host => host).to_s
+  end
+
+  def ws_hostname
+    if MiqEnvironment::Command.is_podified?
+      ENV.fetch("APPLICATION_DOMAIN", nil)
+    else
+      hostname || ipaddress
+    end
+  end
+
+  def ws_ipaddress
+    if MiqEnvironment::Command.is_podified?
+      nil
+    else
+      ipaddress
+    end
+  end
+
+  def ws_address
+    if MiqEnvironment::Command.is_podified?
+      ENV.fetch("APPLICATION_DOMAIN", nil)
+    else
+      ::Settings.webservices.contactwith == 'hostname' ? ws_hostname : ws_ipaddress
+    end
+  end
+
+  def ws_url
+    url_override = settings_for_resource.webservices.url
+    return url_override if url_override
+
+    host = ws_address
+    return if host.nil?
+
+    URI::HTTPS.build(:host => host).to_s
   end
 
   #
@@ -516,11 +581,17 @@ class MiqServer < ApplicationRecord
     Zone.visible.in_my_region.count > 1
   end
 
-  def self.managed_resources
+  def self.audit_details
     {
       :vms                     => Vm.active.count,
       :hosts                   => Host.active.count,
-      :aggregate_physical_cpus => Host.active.in_my_region.sum(:aggregate_physical_cpus),
+      :aggregate_physical_cpus => Host.active.sum(:aggregate_physical_cpus),
+      :providers               => ExtManagementSystem.group(:type).count,
+      :deployment              => MiqEnvironment::Command.is_podified? ? "containers" : "appliance",
+      :arch                    => MiqEnvironment.arch.to_s,
+      :services                => {:active => Service.active.count, :inactive => Service.inactive.count},
+      :service_catalog_items   => {:active => ServiceTemplate.active.count, :archived => ServiceTemplate.archived.count},
+      :region_count            => MiqRegion.count,
     }
   end
 
@@ -532,8 +603,8 @@ class MiqServer < ApplicationRecord
     }
   end
 
-  def self.audit_managed_resources
-    totals = managed_resources.slice(:vms, :hosts)
+  def self.report_audit_details
+    totals = audit_details.slice(:vms, :hosts)
     $audit_log.info("Under Management: #{totals.to_json}")
   end
 
@@ -543,5 +614,35 @@ class MiqServer < ApplicationRecord
     return unless MiqEnvironment::Command.is_podified?
 
     errors.add(:zone, N_('cannot be changed when running in containers')) if zone_id_changed?
+  end
+
+  def messaging_health_check
+    broker = MiqQueue.messaging_client("health_check")
+    return if broker.nil?
+
+    # tolerate transient broker transport blips before bouncing evm
+    max_attempts = ::Settings.server.server_messaging_max_attempts
+    retry_delay = ::Settings.server.server_messaging_retry_delay.to_i_with_method
+    attempts = 0
+
+    begin
+      broker.topics
+    rescue => err
+      attempts += 1
+      if attempts < max_attempts
+        _log.warn("Messaging health check attempt #{attempts}/#{max_attempts} failed: #{err}. Retrying in #{retry_delay}s...")
+        sleep(retry_delay)
+        retry
+      else
+        _log.error("Messaging health check failed after #{max_attempts} attempts: #{err}")
+        shutdown_and_exit(1)
+      end
+    ensure
+      begin
+        broker.close
+      rescue
+        nil
+      end
+    end
   end
 end # class MiqServer

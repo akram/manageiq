@@ -57,7 +57,7 @@ class MiqQueueWorkerBase::Runner < MiqWorker::Runner
         next
       rescue => err
         msg.update_column(:state, MiqQueue::STATUS_ERROR)
-        raise _("%{log} \"%{error}\" attempting to get next message") % {:log => log_prefix, :error => err}
+        raise _("%{log_message} \"%{error}\" attempting to get next message") % {:log_message => log_prefix, :error => err}
       end
     end
   end
@@ -79,10 +79,10 @@ class MiqQueueWorkerBase::Runner < MiqWorker::Runner
   end
 
   def get_message
-    if dequeue_method_via_drb? && @worker_monitor_drb
-      get_message_via_drb
-    elsif dequeue_method_via_miq_messaging?
+    if dequeue_method_via_miq_messaging?
       get_message_via_miq_messaging
+    elsif dequeue_method_via_drb? && @worker_monitor_drb
+      get_message_via_drb
     else
       get_message_via_sql
     end
@@ -101,9 +101,7 @@ class MiqQueueWorkerBase::Runner < MiqWorker::Runner
         begin
           _log.info("#{log_prefix} Reconnecting to DB after timeout error during queue deliver")
 
-          # Remove the connection and establish a new one since reconnect! doesn't always play nice with SSL postgresql connections
-          spec_name = ActiveRecord::Base.connection_specification_name
-          ActiveRecord::Base.establish_connection(ActiveRecord::Base.remove_connection(spec_name))
+          ActiveRecord::Base.postgresql_ssl_friendly_base_reconnect
           @worker.update_spid!
         rescue => err
           do_exit("Exiting worker due to timeout error that could not be recovered from...error: #{err.class.name}: #{err.message}", 1)
@@ -143,6 +141,7 @@ class MiqQueueWorkerBase::Runner < MiqWorker::Runner
       heartbeat
       msg = get_message
       break if msg.nil?
+
       deliver_message(msg)
     end
   end
@@ -184,7 +183,7 @@ class MiqQueueWorkerBase::Runner < MiqWorker::Runner
 
   def miq_messaging_listener_thread
     loop do
-      send("miq_messaging_subscribe_#{@worker.class.miq_messaging_subscribe_mode}") do |msg|
+      send(:"miq_messaging_subscribe_#{@worker.class.miq_messaging_subscribe_mode}") do |msg|
         @message_queue << msg
       end
     rescue => err

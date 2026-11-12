@@ -1,15 +1,11 @@
 class MiqServer::WorkerManagement
   include Vmdb::Logging
 
-  require_nested :Kubernetes
-  require_nested :Process
-  require_nested :Systemd
+  include Dequeue
+  include Heartbeat
+  include Monitor
 
-  include_concern 'Dequeue'
-  include_concern 'Heartbeat'
-  include_concern 'Monitor'
-
-  attr_reader :my_server
+  attr_reader :my_server, :workers
 
   def self.build(my_server)
     klass = if podified?
@@ -45,15 +41,20 @@ class MiqServer::WorkerManagement
     clean_heartbeat_files # Appliance specific
     sync_config
     start_drb_server
+    sync_from_system
     sync_workers
     wait_for_started_workers
+  end
+
+  def sync_starting_workers
+    raise NotImplementedError, _("must be implemented in a subclass")
   end
 
   def start_drb_server
     require 'drb'
     require 'drb/acl'
 
-    acl = ACL.new(%w( deny all allow 127.0.0.1/32 ))
+    acl = ACL.new(%w[deny all allow 127.0.0.1/32])
     DRb.install_acl(acl)
 
     require 'tmpdir'
@@ -70,5 +71,32 @@ class MiqServer::WorkerManagement
 
   def worker_delete(worker_pid)
     @workers_lock.synchronize(:EX) { @workers.delete(worker_pid) }
+  end
+
+  def find_worker(worker)
+    worker = miq_workers.find_by(:id => worker) if worker.kind_of?(Integer)
+    _log.warn("Cannot find Worker <#{worker.inspect}>") if worker.nil?
+
+    worker
+  end
+
+  # remove workers from the miq_workers table and the in memory cache.
+  def remove_workers(workers)
+    return if workers.empty?
+
+    workers.each do |w|
+      yield(w)
+      worker_delete(w.pid)
+      w.destroy
+    end
+    miq_workers.reload
+  end
+
+  private
+
+  def sync_starting_rails_workers
+  end
+
+  def sync_stopping_rails_workers
   end
 end

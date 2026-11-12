@@ -1,5 +1,5 @@
-require File.expand_path('../boot', __FILE__)
-require File.expand_path('../preinitializer', __FILE__)
+require File.expand_path('boot', __dir__)
+require File.expand_path('preinitializer', __dir__)
 require 'rails'
 require 'active_record/railtie'
 require 'action_controller/railtie'
@@ -33,6 +33,8 @@ end
 
 module Vmdb
   class Application < Rails::Application
+    attr_accessor :reloading
+
     # Settings in config/environments/* take precedence over those specified here.
     # Application configuration should go into files in config/initializers
     # -- all .rb files in that directory are automatically loaded.
@@ -80,33 +82,58 @@ module Vmdb
     config.assets.version = '1.0'
 
     # Set the manifest file name so that we are sure it gets overwritten on updates
-    config.assets.manifest = Rails.root.join("public/assets/.sprockets-manifest.json").to_s
+    config.assets.manifest = Rails.public_path.join('assets/.sprockets-manifest.json').to_s
 
     # Disable ActionCable's request forgery protection
     # This is basically matching a set of allowed origins which is not good for us
+    # Note, similarly named forgery protections in action controller are set to true
+    # https://github.com/rails/rails/blob/d437ae311f1b9dc40b442e40eb602e020cec4e49/railties/lib/rails/application/configuration.rb#L115C12-L115C69
+    # 5.0 sets: action_controller.forgery_protection_origin_check = true
+    # 5.2 sets: action_controller.default_protect_from_forgery = true
     config.action_cable.disable_request_forgery_protection = false
     # Matching the origin against the HOST header is much more convenient
     config.action_cable.allow_same_origin_as_host = true
     config.action_cable.mount_path = '/ws/notifications'
 
+    # Rails 6.1.7+ has a protection to not lookup values by a large number.
+    # This is still true in rails 7.2!
+    # A lookup/comparison with a large number (bigger than bigint)
+    # needs to cast the db column to a double/numeric.
+    # and that casting skips the index and forces a table scan
+    #
+    # https://discuss.rubyonrails.org/t/cve-2022-44566-possible-denial-of-service-vulnerability-in-activerecords-postgresql-adapter/82119
+    config.active_record.raise_int_wider_than_64bit = false
+
+    # Use yaml_unsafe_load for column serialization to handle Symbols
+    config.active_record.use_yaml_unsafe_load = true
+
     # Customize any additional options below...
 
     config.autoload_paths += config.eager_load_paths
 
-    # NOTE:  If you are going to make changes to autoload_paths, please make
-    # sure they are all strings.  Rails will push these paths into the
-    # $LOAD_PATH.
-    #
-    # More info can be found in the ruby-lang bug:
-    #
-    #   https://bugs.ruby-lang.org/issues/14372
-    #
-    config.autoload_paths << Rails.root.join("app", "models", "aliases").to_s
-    config.autoload_paths << Rails.root.join("app", "models", "mixins").to_s
-    config.autoload_paths << Rails.root.join("lib").to_s
-    config.autoload_paths << Rails.root.join("lib", "services").to_s
+    # FYI, this is where load_defaults is defined as of 8.1:
+    # https://github.com/rails/rails/blob/v8.1.4/railties/lib/rails/application/configuration.rb#L343-L367
+    config.load_defaults 8.1
+    # TODO: If disabled, causes cross repo test failures in content, ui-classic and amazon provider
+    config.active_record.partial_inserts = true
 
-    config.autoload_once_paths << Rails.root.join("lib", "vmdb", "console_methods.rb").to_s
+    # Disable this setting as it causes MiqRegion.seed to fail validation on belongs_to maintenance zone.
+    # TODO: We should fix this so we don't need to carry this override.
+    config.active_record.belongs_to_required_by_default = false
+
+    # TODO: Rails 7.1 default overridden to fix loading scanning_operations_mixin, dialog_import_service
+    # manageiq/providers/infra_manager/template, dialog_field_importer, workers/event_catcher
+    config.add_autoload_paths_to_load_path = true
+
+    config.autoload_paths << Rails.root.join("app/models/aliases")
+    config.autoload_paths << Rails.root.join("app/models/mixins")
+    config.autoload_paths << Rails.root.join("lib")
+    config.autoload_paths << Rails.root.join("lib/services")
+
+    config.autoload_once_paths << Rails.root.join("lib/vmdb/console_methods.rb")
+
+    # Starting in rails 7.1, the default is unset(nil) so we set it to YAML.
+    config.active_record.default_column_serializer = YAML
 
     require_relative '../lib/request_started_on_middleware'
     config.middleware.use RequestStartedOnMiddleware
@@ -144,6 +171,7 @@ module Vmdb
     # on the top to bottom order of initializer calls in the file.
     # Because this is easy to mess up, keep your initializers in order.
     initializer :load_inflections, :before => :init_vmdb_plugins do
+      require 'vmdb/inflections'
       Vmdb::Inflections.load_inflections
     end
 
@@ -152,14 +180,41 @@ module Vmdb
     end
 
     initializer :load_vmdb_settings, :before => :load_config_initializers do
+      # Setup the Settings constant before the app and engine intializers run.
+      # They could be wrong values since we're not connected to the db yet.
       Vmdb::Settings.init
-      Vmdb::Loggers.apply_config(::Settings.log)
+    end
+
+    initializer :eager_load_all_the_things, :after => :load_config_initializers do
+      if ENV['DEBUG_MANAGEIQ_ZEITWERK'].present?
+        config.eager_load_paths += config.autoload_paths
+        Vmdb::Plugins.each do |plugin|
+          plugin.config.eager_load_paths += plugin.config.autoload_paths
+        end
+      end
+    end
+
+    # Run after code is eager loaded so we can autoload MiqDatabase and ApplicationRecord
+    initializer :init_secret_token, :after => :eager_load! do
+      Vmdb::Initializer.init_secret_token
     end
 
     config.after_initialize do
       Vmdb::Initializer.init
       ActiveRecord::Base.connection_pool.release_connection
       puts "** #{Vmdb::Appliance.BANNER}" unless Rails.env.production?
+
+      YamlPermittedClasses.initialize_app_yaml_permitted_classes
+
+      # Reload Settings to get values from db now that it's safe to autoload
+      ::Settings.reload!
+      Vmdb::Loggers.apply_config(::Settings.log)
+
+      # The descendant_loader.rb hooks descendants and subclasses to do proper sti loading of
+      # subclasses and descendants. It should not be used when code reload is happening.
+      Vmdb::Application.reloading = false
+      Vmdb::Application.reloader.before_class_unload { Vmdb::Application.reloading = true }
+      Vmdb::Application.reloader.to_complete         { Vmdb::Application.reloading = false }
     end
 
     console do

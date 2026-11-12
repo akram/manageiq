@@ -7,8 +7,8 @@ module Vmdb
 
     include Enumerable
 
-    def self.method_missing(m, *args, &block)
-      instance.respond_to?(m) ? instance.send(m, *args, &block) : super
+    def self.method_missing(meth, ...)
+      instance.respond_to?(meth) ? instance.send(meth, ...) : super
     end
 
     def self.respond_to_missing?(*args)
@@ -30,8 +30,8 @@ module Vmdb
     end
 
     def details
-      each_with_object({}) do |engine, hash|
-        hash[engine] = {
+      index_with do |engine|
+        {
           :name    => engine.name,
           :version => version(engine),
           :path    => engine.root.to_s
@@ -45,6 +45,15 @@ module Vmdb
 
     def versions
       details.transform_values { |v| v[:version] }
+    end
+
+    def plugin_for_class(klass)
+      klass = klass.to_s unless klass.kind_of?(String)
+
+      klass_path, _klass_line = Object.const_source_location(klass)
+      return unless klass_path
+
+      paths.detect { |_engine, path| klass_path.start_with?(path) }&.first
     end
 
     # Ansible content (roles) that come out-of-the-box, for use by both Automate
@@ -61,13 +70,17 @@ module Vmdb
     # Ansible content (playbooks and roles) for internal use by provider plugins,
     #   not exposed to Automate, and to be run by ansible_runner
     def ansible_runner_content
-      @ansible_runner_content ||= begin
-        map do |engine|
-          content_dir = engine.root.join("content", "ansible_runner")
-          next unless File.exist?(content_dir.join("roles/requirements.yml"))
+      @ansible_runner_content ||= filter_map do |engine|
+        content_dir = engine.root.join("content", "ansible_runner")
+        next unless File.exist?(content_dir.join("roles/requirements.yml"))
 
-          [engine, content_dir]
-        end.compact
+        [engine, content_dir]
+      end
+    end
+
+    def embedded_workflows_content
+      @embedded_workflows_content ||= index_with do |engine|
+        engine.root.join("content", "workflows").glob("**/*.asl")
       end
     end
 
@@ -80,21 +93,38 @@ module Vmdb
       end
     end
 
+    def automation_runner_classes
+      @automation_runner_classes ||= flat_map { |engine| engine.try(:automation_runners) }.compact
+    end
+
+    def miq_widgets_content
+      @miq_widgets_content ||= Rails.root.join("product/dashboard/widgets").glob("*").map(&:to_s) + flat_map { |engine| content_directories(engine, "dashboard/widgets") }
+    end
+
     def provider_plugins
       @provider_plugins ||= select { |engine| engine.name.start_with?("ManageIQ::Providers::") }
+    end
+
+    def ui_plugins
+      @ui_plugins ||= select { |engine| engine.root.join("package.json").exist? }
     end
 
     def asset_paths
       @asset_paths ||= begin
         require_relative 'plugins/asset_path'
-        map { |engine| AssetPath.new(engine) if AssetPath.asset_path?(engine) }.compact
+        filter_map { |engine| AssetPath.new(engine) if AssetPath.asset_path?(engine) }
+      end
+    end
+
+    def server_role_paths
+      @server_role_paths ||= filter_map do |engine|
+        file = engine.root.join("config/server_roles.csv")
+        file if file.exist?
       end
     end
 
     def systemd_units
-      @systemd_units ||= begin
-        flat_map { |engine| engine.root.join("systemd").glob("*.*") }
-      end
+      @systemd_units ||= flat_map { |engine| engine.root.join("systemd").glob("*.*") }
     end
 
     def load_inflections

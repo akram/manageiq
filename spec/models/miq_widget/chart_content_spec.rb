@@ -1,10 +1,12 @@
 RSpec.describe "Widget Chart Content" do
   let(:widget) { MiqWidget.find_by(:description => "chart_vendor_and_guest_os") }
+  let(:widget_path) { Rails.root.join("product/dashboard/widgets/chart_vendor_and_guest_os.yaml") }
+
   before do
-    _guid, _server, _zone = EvmSpecHelper.create_guid_miq_server_zone
+    EvmSpecHelper.local_miq_server
 
     MiqReport.seed_report("Vendor and Guest OS")
-    MiqWidget.seed_widget("chart_vendor_and_guest_os")
+    MiqWidget.sync_from_file(widget_path)
 
     @role  = FactoryBot.create(:miq_user_role)
     @group = FactoryBot.create(:miq_group, :miq_user_role => @role)
@@ -60,6 +62,6 @@ RSpec.describe "Widget Chart Content" do
 
   it '#generate returns valid data' do
     content = widget.generate_one_content_for_user(@group, @user)
-    expect(ManageIQ::Reporting::Charting.data_ok? content.contents).to eq(true)
+    expect(ManageIQ::Reporting::Charting.data_ok?(content.contents)).to eq(true)
   end
 end

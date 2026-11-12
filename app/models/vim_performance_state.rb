@@ -1,5 +1,5 @@
 class VimPerformanceState < ApplicationRecord
-  include_concern 'Purging'
+  include Purging
 
   serialize :state_data
 
@@ -28,7 +28,7 @@ class VimPerformanceState < ApplicationRecord
     :vm_used_disk_storage
   ].each do |m|
     define_method(m)       { state_data[m] }
-    define_method("#{m}=") { |value| state_data[m] = value }
+    define_method(:"#{m}=") { |value| state_data[m] = value }
   end
 
   # state_data:
@@ -45,22 +45,25 @@ class VimPerformanceState < ApplicationRecord
   # => host_count_total (derive from assoc_ids)
   # => host_sockets     (derive from assoc_ids)
 
-  def self.capture(obj)
+  # TODO: do a single query for the finds
+  # @param objs [Array[Object]|Object] MetricsCapture#target - all should be the same object class
+  # @returns [Array[VimPerformanceState]|VimPerformanceState] return an array if an array was passed in
+  # NOTE: a few calls (with a single object) do use the return and expect a single result
+  def self.capture(objs)
     ts = Time.now.utc
     ts = Time.utc(ts.year, ts.month, ts.day, ts.hour)
-    state = obj.vim_performance_states.find_by(:timestamp => ts)
-    return state unless state.nil?
 
-    state = obj.vim_performance_states.build(:timestamp => ts)
-    state.capture
-    state.save
+    states = Array(objs).map do |obj|
+      state = obj.vim_performance_states.find_by(:timestamp => ts)
+      state ||= obj.vim_performance_states.build(:timestamp => ts).capture_and_save
+    end
 
-    state
+    objs.kind_of?(Array) ? states : states.first
   end
 
   def capture
     self.state_data ||= {}
-    self.capture_interval = 3600
+    self.capture_interval = 1.hour.to_i
     capture_assoc_ids
     capture_parent_host
     capture_parent_storage
@@ -74,6 +77,14 @@ class VimPerformanceState < ApplicationRecord
     capture_tag_names
     capture_image_tag_names
     capture_host_sockets
+
+    self
+  end
+
+  def capture_and_save
+    capture
+    save
+    self
   end
 
   def vm_count_on
@@ -102,47 +113,47 @@ class VimPerformanceState < ApplicationRecord
 
   def storages
     ids = get_assoc(:storages, :on)
-    ids.empty? ? [] : Storage.where(:id => ids).order(:id).to_a
+    ids.empty? ? Storage.none : Storage.where(:id => ids).order(:id)
   end
 
   def ext_management_systems
     ids = get_assoc(:ext_management_systems, :on)
-    ids.empty? ? [] : ExtManagementSystem.where(:id => ids).order(:id).to_a
+    ids.empty? ? ExtManagementSystem.none : ExtManagementSystem.where(:id => ids).order(:id)
   end
 
   def ems_clusters
     ids = get_assoc(:ems_clusters, :on)
-    ids.empty? ? [] : EmsCluster.where(:id => ids).order(:id).to_a
+    ids.empty? ? EmsCluster.none : EmsCluster.where(:id => ids).order(:id)
   end
 
   def hosts
     ids = get_assoc(:hosts)
-    ids.empty? ? [] : Host.where(:id => ids).order(:id).to_a
+    ids.empty? ? Host.none : Host.where(:id => ids).order(:id)
   end
 
   def vms
     ids = get_assoc(:vms)
-    ids.empty? ? [] : VmOrTemplate.where(:id => ids).order(:id).to_a
+    ids.empty? ? VmOrTemplate.none : VmOrTemplate.where(:id => ids).order(:id)
   end
 
   def container_nodes
     ids = get_assoc(:container_nodes)
-    ids.empty? ? [] : ContainerNode.where(:id => ids).order(:id).to_a
+    ids.empty? ? ContainerNode.none : ContainerNode.where(:id => ids).order(:id)
   end
 
   def container_groups
     ids = get_assoc(:container_groups)
-    ids.empty? ? [] : ContainerGroup.where(:id => ids).order(:id).to_a
+    ids.empty? ? ContainerGroup.none : ContainerGroup.where(:id => ids).order(:id).not_archived_before(timestamp)
   end
 
   def containers
     ids = get_assoc(:containers)
-    ids.empty? ? [] : Container.where(:id => ids).order(:id).to_a
+    ids.empty? ? Container.none : Container.where(:id => ids).order(:id).not_archived_before(timestamp)
   end
 
   def all_container_groups
     ids = get_assoc(:all_container_groups)
-    ids.empty? ? [] : ContainerGroup.where(:id => ids).order(:id).to_a
+    ids.empty? ? ContainerGroup.none : ContainerGroup.where(:id => ids).order(:id)
   end
 
   def get_assoc(relat, mode = nil)
@@ -153,12 +164,20 @@ class VimPerformanceState < ApplicationRecord
     ids.nil? ? [] : ids.uniq.sort
   end
 
+  # @param timestamp [Time|String] hourly timestamp, prefer Time
+  # @returns [Range] time range
+  def self.get_time_interval(timestamp)
+    timestamp = Time.parse(timestamp).utc if timestamp.kind_of?(String)
+    (timestamp - 1.hour)..timestamp
+  end
+
   private
 
   def capture_disk_types
     if hardware
       self.allocated_disk_types = hardware.disks.each_with_object({}) do |disk, res|
         next if disk.size.nil?
+
         type = disk.backing.try(:volume_type) || 'unclassified'
         res[type] = (res[type] || 0) + disk.size
       end
@@ -171,7 +190,7 @@ class VimPerformanceState < ApplicationRecord
   end
 
   def capture_total(field)
-    return resource.send("aggregate_#{field}") if resource.respond_to?("aggregate_#{field}")
+    return resource.send(:"aggregate_#{field}") if resource.respond_to?(:"aggregate_#{field}")
 
     field == :memory ? hardware.try(:memory_mb) : hardware.try(:aggregate_cpu_speed)
   end
@@ -179,19 +198,9 @@ class VimPerformanceState < ApplicationRecord
   def capture_assoc_ids
     result = {}
     ASSOCIATIONS.each do |assoc|
-      method = if assoc == :vms
-                 if resource.kind_of?(EmsCluster)
-                   :all_vms_and_templates
-                 elsif resource.kind_of?(Service)
-                   :vms
-                 else
-                   :vms_and_templates
-                 end
-               else
-                 assoc
-               end
-      next unless resource.respond_to?(method)
-      assoc_recs = resource.send(method)
+      assoc_recs = fetch_assoc_records(resource, assoc)
+      next if assoc_recs == false
+
       has_state = assoc_recs[0] && assoc_recs[0].respond_to?(:state)
 
       r = result[assoc] = {:on => [], :off => []}
@@ -211,6 +220,25 @@ class VimPerformanceState < ApplicationRecord
       r_off.sort!
     end
     self.assoc_ids = result.presence
+  end
+
+  def fetch_assoc_records(resource, assoc)
+    method = if assoc == :vms
+               if resource.kind_of?(EmsCluster)
+                 :all_vms_and_templates
+               elsif resource.kind_of?(Service)
+                 :vms
+               else
+                 :vms_and_templates
+               end
+             else
+               assoc
+             end
+    return false unless resource.respond_to?(method)
+
+    records = resource.send(method)
+    records = records.not_archived_before(timestamp) if records.try(:klass).respond_to?(:not_archived_before)
+    records
   end
 
   def capture_parent_cluster
@@ -251,7 +279,7 @@ class VimPerformanceState < ApplicationRecord
   def capture_vm_disk_storage
     if resource.kind_of?(VmOrTemplate)
       [:used_disk, :allocated_disk].each do |type|
-        send("vm_#{type}_storage=", resource.send("#{type}_storage"))
+        send(:"vm_#{type}_storage=", resource.send(:"#{type}_storage"))
       end
     end
   end

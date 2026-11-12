@@ -14,6 +14,7 @@ module Vmdb
   module Loggers
     def self.init
       return if @initialized
+
       create_loggers
       @initialized = true
     end
@@ -29,21 +30,12 @@ module Vmdb
     end
 
     def self.create_logger(log_file, logger_class = ManageIQ::Loggers::Base)
-      log_file = Pathname.new(log_file) if log_file.kind_of?(String)
+      log_file = Pathname.new(log_file)              if log_file.kind_of?(String)
       log_file = ManageIQ.root.join("log", log_file) if log_file.try(:dirname).to_s == "."
-      progname = log_file.try(:basename, ".*").to_s
 
-      logger_class.new(log_file, progname: progname).tap do |logger|
-        broadcast_logger = create_broadcast_logger
-        if broadcast_logger
-          logger.extend(ActiveSupport::Logger.broadcast(broadcast_logger))
-          broadcast_logger.progname = progname
-
-          # HACK: In order to access the broadcast logger in test, we inject it
-          #   as an instance var.
-          logger.instance_variable_set(:@broadcast_logger, broadcast_logger) if Rails.env.test?
-        end
-      end
+      create_container_logger(log_file, logger_class) ||
+        create_journald_logger(log_file, logger_class) ||
+        create_file_logger(log_file, logger_class)
     end
 
     private_class_method def self.create_loggers
@@ -56,32 +48,51 @@ module Vmdb
       configure_external_loggers
     end
 
-    private_class_method def self.create_broadcast_logger
-      create_container_logger || create_journald_logger
+    private_class_method def self.create_file_logger(log_file, logger_class)
+      require "manageiq/loggers/file"
+      logger = ManageIQ::Loggers::File.new(log_file, :progname => log_file_to_prog_name(log_file))
+
+      create_wrapper_logger(log_file, logger_class, logger)
     end
 
-    private_class_method def self.create_container_logger
+    private_class_method def self.create_container_logger(log_file_name, logger_class)
+      return nil unless (logger = create_raw_container_logger(log_file_name))
+
+      create_wrapper_logger(log_file_name, logger_class, logger)
+    end
+
+    private_class_method def self.create_raw_container_logger(log_file_name)
       return unless ENV["CONTAINER"]
 
       require "manageiq/loggers/container"
-      ManageIQ::Loggers::Container.new
+      ManageIQ::Loggers::Container.new(:progname => log_file_to_prog_name(log_file_name))
     end
 
-    private_class_method def self.create_journald_logger
+    private_class_method def self.create_journald_logger(log_file_name, logger_class)
+      return nil unless (logger = create_raw_journald_logger(log_file_name))
+
+      create_wrapper_logger(log_file_name, logger_class, logger)
+    end
+
+    private_class_method def self.create_raw_journald_logger(log_file_name)
       return unless MiqEnvironment::Command.supports_systemd?
 
       require "manageiq/loggers/journald"
-      ManageIQ::Loggers::Journald.new
+      ManageIQ::Loggers::Journald.new(:progname => log_file_to_prog_name(log_file_name))
     rescue LoadError
       nil
+    end
+
+    private_class_method def self.create_wrapper_logger(log_file, logger_class, wrapped_logger)
+      progname = log_file_to_prog_name(log_file)
+
+      logger = logger_class.new(nil, :progname => progname)
+      logger.wrap(wrapped_logger).tap { |broadcaster| broadcaster.progname = progname }
     end
 
     private_class_method def self.configure_external_loggers
       require 'awesome_spawn'
       AwesomeSpawn.logger = $log
-
-      require 'log_decorator'
-      LogDecorator.logger = $log
 
       require 'inventory_refresh'
       InventoryRefresh.logger = $log
@@ -98,25 +109,11 @@ module Vmdb
     end
 
     def self.contents(log, last = 1000)
-      log = log.instance_variable_get(:@logdev)&.filename.to_s if log.kind_of?(Logger)
-      return "" unless File.file?(log)
+      log.try(:contents, last)&.join("\n") || ""
+    end
 
-      if last.nil?
-        contents = File.readlines(log, :mode => "rb", :chomp => true)
-      else
-        require 'util/miq-system'
-        contents = MiqSystem.tail(log, last)
-      end
-      return "" if contents.nil? || contents.empty?
-
-      # Don't return lines containing invalid UTF8 byte sequences
-      results = contents.select do |line|
-        line&.unpack("U*") rescue nil
-      end
-
-      # Put back the utf-8 encoding which is the default for most rails libraries
-      # after opening it as binary and getting rid of the invalid UTF8 byte sequences
-      results.join("\n").force_encoding("utf-8")
+    private_class_method def self.log_file_to_prog_name(log_file)
+      log_file.try(:basename, ".*").to_s
     end
   end
 end

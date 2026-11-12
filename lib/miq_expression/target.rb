@@ -1,8 +1,11 @@
 class MiqExpression::Target
-  ParseError = Class.new(StandardError)
-
-  def self.parse!(field)
-    parse(field) || raise(ParseError, field)
+  # TODO: fix to run against a single regular expression
+  # supports strange syntax like: managed.location, Model.x.y.managed-location
+  def self.parse(str)
+    MiqExpression::Field.parse(str) ||
+      MiqExpression::CountField.parse(str) ||
+      MiqExpression::Tag.parse(str) ||
+      MiqExpression::InvalidTarget.new
   end
 
   # example .parse('Host.vms-host_name')
@@ -10,10 +13,10 @@ class MiqExpression::Target
   # {:model_name => Host<ApplicationRecord> , :associations => ['vms']<Array>, :column_name => 'host_name' <String>}
   def self.parse_params(field)
     return unless field.kind_of?(String)
-    match = self::REGEX.match(field) || return
-    # convert matches to hash to format
-    # {:model_name => 'User', :associations => ...}
-    parsed_params = Hash[match.names.map(&:to_sym).zip(match.to_a[1..-1])]
+
+    parsed_params = match(field)
+    return if parsed_params.nil?
+
     begin
       parsed_params[:model_name] = parsed_params[:model_name].classify.safe_constantize
     rescue LoadError # issues for case sensitivity (e.g.: VM vs vm)
@@ -23,6 +26,10 @@ class MiqExpression::Target
     parsed_params
   end
 
+  def self.match(field)
+    self::REGEX.match(field)&.named_captures&.symbolize_keys
+  end
+
   attr_reader :column
   attr_accessor :model, :associations
 
@@ -30,6 +37,14 @@ class MiqExpression::Target
     @model = model
     @associations = associations
     @column = column
+  end
+
+  def column_type
+    nil
+  end
+
+  def sub_type
+    column_type
   end
 
   def date?
@@ -48,13 +63,22 @@ class MiqExpression::Target
     column_type == :decimal
   end
 
+  def tag?
+    false
+  end
+
   def numeric?
-    %i(fixnum integer decimal float).include?(column_type)
+    %i[fixnum integer decimal float].include?(column_type)
   end
 
   def plural?
     return false if reflections.empty?
+
     [:has_many, :has_and_belongs_to_many].include?(reflections.last.macro)
+  end
+
+  def attribute_supported_by_sql?
+    reflection_supported_by_sql?
   end
 
   def reflection_supported_by_sql?
@@ -63,13 +87,15 @@ class MiqExpression::Target
     false
   end
 
-  # AR or virtual reflections
+  # @returns AR or virtual reflections
+  # @raises ArgumentError
   def reflections
     model.collect_reflections_with_virtual(associations) ||
       raise(ArgumentError, "One or more associations are invalid: #{associations.join(", ")}")
   end
 
-  # only AR reflections
+  # @returns only AR reflections
+  # @raises ArgumentError
   def collect_reflections
     model.collect_reflections(associations) ||
       raise(ArgumentError, "One or more associations are invalid: #{associations.join(", ")}")
@@ -79,8 +105,12 @@ class MiqExpression::Target
     ret = {}
     model && collect_reflections.map(&:name).inject(ret) { |a, p| a[p] ||= {} }
     ret
+  rescue ArgumentError
+    # since the reflections are not valid, we don't have any includes
+    {}
   end
 
+  # @raises ArgumentError
   def target
     if associations.none?
       model
@@ -91,7 +121,7 @@ class MiqExpression::Target
 
   def tag_path_with(value = nil)
     # encode embedded / characters in values since / is used as a tag seperator
-    "#{tag_path}#{value.nil? ? '' : '/' + value.to_s.gsub(/\//, "%2f")}"
+    "#{tag_path}#{value.nil? ? '' : '/' + value.to_s.gsub("/", "%2f")}"
   end
 
   def exclude_col_by_preprocess_options?(options)
@@ -102,6 +132,8 @@ class MiqExpression::Target
     else
       false
     end
+  rescue ArgumentError # reflections are not valid when looking up target
+    false
   end
 
   # this should only be accessed in MiqExpression
@@ -125,11 +157,26 @@ class MiqExpression::Target
   # this should only be accessed in MiqExpression
   # please avoid using it
   def arel_attribute
-    target&.arel_attribute(column, arel_table)
+    target && target.arel_table[column, arel_table]
   end
 
   def virtual_attribute?
     false
+  end
+
+  def hash
+    [column, associations, model].hash
+  end
+
+  def ==(other)
+    other.kind_of?(MiqExpression::Target) &&
+      column == other.column &&
+      model == other.model &&
+      associations == other.associations
+  end
+
+  def eql?(other)
+    other.class == self.class && self == other
   end
 
   private

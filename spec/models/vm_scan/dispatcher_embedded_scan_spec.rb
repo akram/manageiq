@@ -2,11 +2,11 @@ RSpec.describe "VmScanDispatcherEmbeddedScanSpec" do
   describe "dispatch embedded" do
     include Spec::Support::JobProxyDispatcherHelper
 
-    NUM_OF_VMS = 5
-    NUM_OF_REPO_VMS = 0
-    NUM_OF_HOSTS = 3
-    NUM_OF_SERVERS = 3
-    NUM_OF_STORAGES = 3
+    let(:vm_count)      { 5 }
+    let(:repo_vm_count) { 0 }
+    let(:host_count)    { 3 }
+    let(:server_count)  { 3 }
+    let(:storage_count) { 3 }
 
     def assert_at_most_x_scan_jobs_per_y_resource(x_scans, y_resource)
       vms_in_embedded_scanning = Job.where(["dispatch_status = ? AND state != ? AND target_class = ?", "active", "finished", "VmOrTemplate"])
@@ -20,17 +20,15 @@ RSpec.describe "VmScanDispatcherEmbeddedScanSpec" do
                end
 
       if y_resource == :miq_server
-        resource_hsh = vms_in_embedded_scanning.inject({}) do |hsh, target_id|
+        resource_hsh = vms_in_embedded_scanning.each_with_object({}) do |target_id, hsh|
           hsh[target_id] ||= 0
           hsh[target_id] += 1
-          hsh
         end
       else
         vms = VmOrTemplate.where(:id => vms_in_embedded_scanning)
-        resource_hsh = vms.inject({}) do |hsh, v|
+        resource_hsh = vms.each_with_object({}) do |v, hsh|
           hsh[v.send(method)] ||= 0
           hsh[v.send(method)] += 1
-          hsh
         end
       end
 
@@ -42,29 +40,25 @@ RSpec.describe "VmScanDispatcherEmbeddedScanSpec" do
       let(:zone) { FactoryBot.create(:zone) }
       before do
         server = EvmSpecHelper.local_miq_server(:is_master => true, :name => "test_server_main_server", :zone => zone)
-        (NUM_OF_SERVERS - 1).times do |i|
-          FactoryBot.create(:miq_server, :zone => server.zone, :name => "test_server_#{i}")
-        end
+        FactoryBot.create_list(:miq_server, server_count - 1, :zone => server.zone)
 
         # TODO: We should be able to set values so we don't need to stub behavior
         allow_any_instance_of(MiqServer).to receive_messages(:is_vix_disk? => true)
         allow_any_instance_of(MiqServer).to receive_messages(:is_a_proxy? => true)
         allow_any_instance_of(MiqServer).to receive_messages(:has_active_role? => true)
-        allow_any_instance_of(ManageIQ::Providers::Vmware::InfraManager).to receive_messages(:authentication_status_ok? => true)
-        allow_any_instance_of(Host).to receive_messages(:authentication_status_ok? => true)
 
-        @hosts, @proxies, @storages, @vms, @repo_vms = build_entities(
-          :hosts    => NUM_OF_HOSTS,
-          :storages => NUM_OF_STORAGES,
-          :vms      => NUM_OF_VMS,
-          :repo_vms => NUM_OF_REPO_VMS,
-          :zone     => zone,
+        _hosts, _proxies, _storages, @vms, _repo_vms = build_entities(
+          :hosts    => host_count,
+          :storages => storage_count,
+          :vms      => vm_count,
+          :repo_vms => repo_vm_count,
+          :zone     => zone
         )
       end
 
       context "and a scan job for each vm" do
         before do
-          @jobs = @vms.collect(&:raw_scan)
+          _jobs = @vms.collect(&:raw_scan)
         end
 
         context "and embedded scans on ems" do
@@ -78,6 +72,7 @@ RSpec.describe "VmScanDispatcherEmbeddedScanSpec" do
             it "should signal 2 jobs to start" do
               stub_settings(:coresident_miqproxy => {:concurrent_per_ems => 2},
                             :ems                 => {:ems_amazon => {}})
+              MiqQueue.truncate
               VmScan::Dispatcher.dispatch
               expect(MiqQueue.count).to eq(2)
             end

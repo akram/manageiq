@@ -18,7 +18,7 @@ module Metric::Common
     serialize :assoc_ids
     serialize :min_max   # TODO: Move this to MetricRollup
 
-    virtual_column :v_derived_storage_used, :type => :float, :arel => (lambda do |t|
+    virtual_attribute :v_derived_storage_used, :float, :arel => (lambda do |t|
       t.grouping(t[:derived_storage_total] - t[:derived_storage_free])
     end)
 
@@ -34,9 +34,9 @@ module Metric::Common
 
     attr_accessor :inside_time_profile, :time_profile_adjusted_timestamp
 
-    virtual_column :v_date,  :type => :datetime
+    alias_attribute :v_date, :timestamp
     virtual_column :v_month, :type => :string
-    virtual_column :v_time,  :type => :datetime
+    alias_attribute :v_time, :timestamp
 
     virtual_column :v_derived_vm_count,             :type => :integer
     virtual_column :v_derived_host_count,           :type => :integer
@@ -47,6 +47,7 @@ module Metric::Common
 
   def v_derived_storage_used
     return nil if derived_storage_total.nil? || derived_storage_free.nil?
+
     derived_storage_total - derived_storage_free
   end
 
@@ -56,7 +57,7 @@ module Metric::Common
                        .where('timestamp >= ? and timestamp < ?', # This picks only the first midnight
                               timestamp.to_date, (timestamp + 1.day).to_date)
                        .where.not(:derived_storage_total => nil, :derived_storage_free => nil)
-    recs.send(mode, MetricRollup.arel_attribute(:v_derived_storage_used))
+    recs.send(mode, MetricRollup.arel_table[:v_derived_storage_used])
   end
 
   def min_v_derived_storage_used
@@ -91,22 +92,15 @@ module Metric::Common
     # We need to divide by the number of running VMs since the is an aggregation of the millisend values of all the child VMs
     unless resource_type == 'VmOrTemplate'
       return 0 if derived_vm_count_on.nil? || derived_vm_count_on == 0
+
       raw_val = (raw_val / derived_vm_count_on)
     end
 
     (raw_val * 1000.0).round / 10.0
   end
 
-  def v_date
-    timestamp
-  end
-
   def v_month
     timestamp.strftime("%Y/%m")
-  end
-
-  def v_time
-    timestamp
   end
 
   def v_derived_vm_count
@@ -119,16 +113,19 @@ module Metric::Common
 
   def v_derived_cpu_reserved_pct
     return nil if derived_cpu_reserved.nil? || derived_cpu_available.nil? || derived_cpu_available == 0
+
     (derived_cpu_reserved / derived_cpu_available * 100)
   end
 
   def v_derived_memory_reserved_pct
     return nil if derived_memory_reserved.nil? || derived_memory_available.nil? || derived_memory_available == 0
+
     (derived_memory_reserved / derived_memory_available * 100)
   end
 
   def v_derived_cpu_total_cores_used
     return nil if cpu_usage_rate_average.nil? || derived_vm_numvcpus.nil? || derived_vm_numvcpus == 0
+
     (cpu_usage_rate_average * derived_vm_numvcpus) / 100.0
   end
 
@@ -146,12 +143,12 @@ module Metric::Common
   end
 
   def nil_out_values_for_apply_time_profile
-    (Metric::Rollup::ROLLUP_COLS + ["assoc_ids", "min_max"]).each { |c| send("#{c}=", nil) }
+    (Metric::Rollup::ROLLUP_COLS + ["assoc_ids", "min_max"]).each { |c| send(:"#{c}=", nil) }
   end
 
   class_methods do
     def for_tag_names(args)
-      where(args.map { |t| "tag_names like ?" }.join(" OR "), *(args.map { |t| "%" + t.join("/") + "%" }))
+      where(args.map { |_t| "tag_names like ?" }.join(" OR "), *(args.map { |t| "%" + t.join("/") + "%" }))
     end
 
     def for_time_range(start_time, end_time)

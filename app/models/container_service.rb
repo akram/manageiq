@@ -6,11 +6,21 @@ class ContainerService < ApplicationRecord
 
   belongs_to  :ext_management_system, :foreign_key => "ems_id"
   has_and_belongs_to_many :container_groups, :join_table => :container_groups_container_services
-  has_many :container_routes
+  has_many :container_routes # delete to be handled by refresh
   has_many :container_service_port_configs, :dependent => :destroy
   belongs_to :container_project
-  has_many :labels, -> { where(:section => "labels") }, :class_name => "CustomAttribute", :as => :resource, :dependent => :destroy
-  has_many :selector_parts, -> { where(:section => "selectors") }, :class_name => "CustomAttribute", :as => :resource, :dependent => :destroy
+  has_many :annotations, -> { where(:section => "annotations") }, # rubocop:disable Rails/HasManyOrHasOneDependent
+           :class_name => "CustomAttribute",
+           :as         => :resource,
+           :inverse_of => :resource
+  has_many :labels, -> { where(:section => "labels") }, # rubocop:disable Rails/HasManyOrHasOneDependent
+           :class_name => "CustomAttribute",
+           :as         => :resource,
+           :inverse_of => :resource
+  has_many :selector_parts, -> { where(:section => "selectors") }, # rubocop:disable Rails/HasManyOrHasOneDependent
+           :class_name => "CustomAttribute",
+           :as         => :resource,
+           :inverse_of => :resource
   has_many :container_nodes, -> { distinct }, :through => :container_groups
   belongs_to :container_image_registry
 
@@ -22,11 +32,7 @@ class ContainerService < ApplicationRecord
 
   acts_as_miq_taggable
 
-  virtual_column :container_groups_count, :type => :integer
-
-  def container_groups_count
-    number_of(:container_groups)
-  end
+  virtual_total :container_groups_count, :container_groups
 
   include Metric::CiMixin
 

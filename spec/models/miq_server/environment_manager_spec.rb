@@ -3,14 +3,12 @@ require 'socket'
 RSpec.describe "Server Environment Management" do
   context ".get_network_information" do
     let(:mac_address) { 'a:1:b:2:c:3:d:4' }
-    let(:hostname)    { "localhost.localdomain" }
+    let(:hostname)    { `hostname -f`.chomp }
     let(:ip_address)  { "10.1.2.3" }
 
     before do
       require "uuidtools"
       allow(UUIDTools::UUID).to receive(:mac_address).and_return(mac_address)
-      allow(Socket).to receive(:gethostname).and_return("localhost")
-      allow(Socket).to receive(:gethostbyname).with("localhost").and_return([hostname])
       allow(Socket).to receive(:ip_address_list).and_return([Addrinfo.ip(ip_address)])
     end
 
@@ -21,7 +19,7 @@ RSpec.describe "Server Environment Management" do
 
   context "#check_disk_usage" do
     before do
-      _, @miq_server, = EvmSpecHelper.create_guid_miq_server_zone
+      @miq_server = EvmSpecHelper.local_miq_server
       allow(@miq_server).to receive_messages(:disk_usage_threshold => 70)
     end
 

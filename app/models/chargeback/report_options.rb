@@ -18,9 +18,7 @@ class Chargeback
     :ext_options,
     :include_metrics,      # enable charging allocated resources with C & U
     :method_for_allocated_metrics,
-    :group_by_tenant?,
-    :group_by_date_only?,
-    :cumulative_rate_calculation,
+    :cumulative_rate_calculation
   ) do
     def self.new_from_h(hash)
       new(*hash.values_at(*members))
@@ -39,7 +37,7 @@ class Chargeback
       !!self[:cumulative_rate_calculation]
     end
 
-    ALLOCATED_METHODS_WHITELIST = %i(max avg current_value).freeze
+    ALLOCATED_METHODS_WHITELIST = %i[max avg current_value].freeze
 
     def method_for_allocated_metrics
       method = (self[:method_for_allocated_metrics] || :max).to_sym
@@ -49,6 +47,7 @@ class Chargeback
       end
 
       return :sum_of_maxes_from_grouped_values if method == :max && group_by_tenant?
+
       method
     end
 
@@ -146,6 +145,10 @@ class Chargeback
 
     def group_by_tenant?
       self[:groupby] == 'tenant'
+    end
+
+    def group_by_date_first?
+      self[:groupby] == 'date-first'
     end
 
     def group_by_date_only?

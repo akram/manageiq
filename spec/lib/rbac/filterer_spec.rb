@@ -127,20 +127,24 @@ RSpec.describe Rbac::Filterer do
   let(:default_tenant)     { Tenant.seed }
 
   let(:admin_user)         { FactoryBot.create(:user, :role => "super_administrator") }
+  let(:admin_group)        { admin_user.miq_groups.find_by(:description => "EvmGroup-super_administrator") }
 
   let(:owner_tenant)       { FactoryBot.create(:tenant) }
   let(:owner_group)        { FactoryBot.create(:miq_group, :tenant => owner_tenant) }
   let(:owner_user)         { FactoryBot.create(:user, :miq_groups => [owner_group]) }
-  let(:owned_vm)           { FactoryBot.create(:vm_vmware, :tenant => owner_tenant) }
+  let(:owned_ems)          { FactoryBot.create(:ems_vmware, :tenant => owner_tenant) }
+  let(:owned_vm)           { FactoryBot.create(:vm_vmware, :ext_management_system => owned_ems, :tenant => owner_tenant) }
 
   let(:other_tenant)       { FactoryBot.create(:tenant) }
   let(:other_group)        { FactoryBot.create(:miq_group, :tenant => other_tenant) }
   let(:other_user)         { FactoryBot.create(:user, :miq_groups => [other_group]) }
-  let(:other_vm)           { FactoryBot.create(:vm_vmware, :tenant => other_tenant) }
+  let(:other_ems)          { FactoryBot.create(:ems_vmware, :tenant => other_tenant) }
+  let(:other_vm)           { FactoryBot.create(:vm_vmware, :ext_management_system => other_ems, :tenant => other_tenant) }
 
   let(:child_tenant)       { FactoryBot.create(:tenant, :divisible => false, :parent => owner_tenant) }
   let(:child_group)        { FactoryBot.create(:miq_group, :tenant => child_tenant) }
   let(:child_user)         { FactoryBot.create(:user, :miq_groups => [child_group]) }
+  let(:child_ems)          { FactoryBot.create(:ems_vmware, :tenant => child_tenant) }
   let(:child_openstack_vm) { FactoryBot.create(:vm_openstack, :tenant => child_tenant, :miq_group => child_group) }
 
   describe ".search" do
@@ -367,10 +371,10 @@ RSpec.describe Rbac::Filterer do
         end
       end
 
-      %w(
+      %w[
         automation_manager_authentication ManageIQ::Providers::AutomationManager::Authentication
         embedded_automation_manager_authentication ManageIQ::Providers::EmbeddedAutomationManager::Authentication
-      ).slice(2) do |factory, klass|
+      ].slice(2) do |factory, klass|
         context "searching for instances of #{klass}" do
           let!(:automation_manager_authentication) { FactoryBot.create(factory) }
           automation_manager_authentication.tag_with('/managed/environment/prod', :ns => '*')
@@ -627,7 +631,7 @@ RSpec.describe Rbac::Filterer do
       let(:nonsql_expression) { {"=" => {"field" => "Vm-vendor_display", "value" => "VMware"}} }
       let(:raw_expression)    { nonsql_expression }
       let(:expression)        { MiqExpression.new(raw_expression) }
-      let(:search_attributes) { { :class => "Vm", :filter => expression } }
+      let(:search_attributes) { {:class => "Vm", :filter => expression} }
       let(:results)           { subject.search(search_attributes).first }
 
       before { [owned_vm, other_vm] }
@@ -638,13 +642,13 @@ RSpec.describe Rbac::Filterer do
       end
 
       it "does not add references without includes" do
-        expect(subject).to receive(:include_references).with(anything, Vm, nil, nil).and_call_original
+        expect(subject).to receive(:include_references).with(anything, Vm, nil, nil, nil).and_call_original
         results
       end
 
       context "with a partial non-sql filter" do
-        let(:sql_expression) { { "IS EMPTY" => { "field" => "Vm.host-name" } } }
-        let(:raw_expression) { { "AND" => [nonsql_expression, sql_expression] } }
+        let(:sql_expression) { {"IS EMPTY" => {"field" => "Vm.host-name"}} }
+        let(:raw_expression) { {"AND" => [nonsql_expression, sql_expression]} }
 
         it "finds the Vms" do
           expect(results.to_a).to match_array [owned_vm, other_vm]
@@ -652,7 +656,7 @@ RSpec.describe Rbac::Filterer do
         end
 
         it "includes references" do
-          expect(subject).to receive(:include_references).with(anything, ::Vm, nil, :host => {})
+          expect(subject).to receive(:include_references).with(anything, Vm, nil, nil, {:host => {}})
                                                          .and_call_original
           expect(subject).to receive(:warn).never
           results
@@ -669,7 +673,7 @@ RSpec.describe Rbac::Filterer do
         end
 
         it "does not add references since there isn't a SQL filter" do
-          expect(subject).to receive(:include_references).with(anything, Vm, {:evm_owner => {}}, nil).and_call_original
+          expect(subject).to receive(:include_references).with(anything, Vm, {:evm_owner => {}}, {:evm_owner => {}}, nil).and_call_original
           results
         end
 
@@ -678,7 +682,7 @@ RSpec.describe Rbac::Filterer do
           let(:results)           { subject.search(search_with_where).first }
 
           it "will try to skip references to begin with" do
-            expect(subject).to receive(:include_references).with(anything, Vm, {:evm_owner => {}}, nil).and_call_original
+            expect(subject).to receive(:include_references).with(anything, Vm, {:evm_owner => {}}, {:evm_owner => {}}, nil).and_call_original
             results
           end
 
@@ -688,7 +692,7 @@ RSpec.describe Rbac::Filterer do
             let(:results)     { subject.search(null_search).first }
 
             it "will not try to skip references" do
-              expect(subject).to receive(:include_references).with(anything, Vm, {:evm_owner => {}}, nil).and_call_original
+              expect(subject).to receive(:include_references).with(anything, Vm, {:evm_owner => {}}, {:evm_owner => {}}, nil).and_call_original
               results
             end
           end
@@ -698,7 +702,7 @@ RSpec.describe Rbac::Filterer do
 
     context "with a miq_expression filter on vms" do
       let(:expression)        { MiqExpression.new("=" => {"field" => "Vm-vendor", "value" => "vmware"}) }
-      let(:search_attributes) { { :class => "Vm", :filter => expression } }
+      let(:search_attributes) { {:class => "Vm", :filter => expression} }
       let(:results)           { described_class.search(search_attributes).first }
 
       before { [owned_vm, other_vm] }
@@ -722,15 +726,16 @@ RSpec.describe Rbac::Filterer do
         end
 
         it "adds references" do
-          expect(results.references_values).to match_array %w[users]
+          expect(results.eager_load_values).to eq([:evm_owner => {}])
         end
       end
     end
 
     context "with :extra_cols on a Service" do
+      subject { described_class.new }
       let(:extra_cols)        { [:owned_by_current_user] }
-      let(:search_attributes) { { :class => "Service", :extra_cols => extra_cols } }
-      let(:results)           { described_class.search(search_attributes).first }
+      let(:search_attributes) { {:class => "Service", :extra_cols => extra_cols} }
+      let(:results)           { subject.search(search_attributes).first }
 
       before { FactoryBot.create :service, :evm_owner => owner_user }
 
@@ -739,19 +744,23 @@ RSpec.describe Rbac::Filterer do
       end
 
       it "does not add references with no includes" do
-        expect(results.references_values).to eq []
+        expect(subject).to receive(:include_references).with(anything, Service, nil, nil, nil).and_call_original
+        results
       end
 
       context "with :include_for_find" do
-        let(:include_search) { search_attributes.merge(:include_for_find => {:evm_owner => {}}) }
-        let(:results)        { described_class.search(include_search).first }
+        subject { described_class.new }
+        let(:include_for_find) { {:evm_owner => {}} }
+        let(:include_search)   { search_attributes.merge(:include_for_find => include_for_find) }
+        let(:results)          { subject.search(include_search).first }
 
         it "finds the Service" do
           expect(results.first.attributes["owned_by_current_user"]).to be false
         end
 
         it "adds references" do
-          expect(results.references_values).to match_array %w[users]
+          expect(subject).to receive(:include_references).with(anything, Service, include_for_find, include_for_find, nil).and_call_original
+          results
         end
       end
     end
@@ -832,21 +841,23 @@ RSpec.describe Rbac::Filterer do
         end
       end
 
-      context "with accessible_tenant_ids filtering (strategy = :parent_ids)" do
-        it "can see parent tenant's EMS" do
-          ems = FactoryBot.create(:ems_vmware, :tenant => owner_tenant)
+      context "with accessible_tenant_ids filtering (strategy = :ancestor_ids)" do
+        it "can see parent and own tenant's EMS" do
+          owned_ems
+          child_ems
           results = described_class.search(:class => "ExtManagementSystem", :miq_group => child_group).first
-          expect(results).to match_array [ems]
+          expect(results).to match_array [owned_ems, child_ems]
         end
 
         it "can't see descendant tenant's EMS" do
-          _ems = FactoryBot.create(:ems_vmware, :tenant => child_tenant)
+          owned_ems
+          child_ems
           results = described_class.search(:class => "ExtManagementSystem", :miq_group => owner_group).first
-          expect(results).to match_array []
+          expect(results).to match_array [owned_ems]
         end
       end
 
-      context "with accessible_tenant_ids filtering (strategy = nil aka tenant only)" do
+      context "with accessible_tenant_ids filtering (strategy = :descendant_ids)" do
         it "can see tenant's request task" do
           task = FactoryBot.create(:miq_request_task, :tenant => owner_tenant)
           results = described_class.search(:class => "MiqRequestTask", :miq_group => owner_group).first
@@ -859,10 +870,10 @@ RSpec.describe Rbac::Filterer do
           expect(results).to match_array []
         end
 
-        it "can't see descendant tenant's request task" do
-          _task = FactoryBot.create(:miq_request_task, :tenant => child_tenant)
+        it "can see descendant tenant's request task" do
+          task = FactoryBot.create(:miq_request_task, :tenant => child_tenant)
           results = described_class.search(:class => "MiqRequestTask", :miq_group => owner_group).first
-          expect(results).to match_array []
+          expect(results).to match_array [task]
         end
       end
 
@@ -1015,9 +1026,10 @@ RSpec.describe Rbac::Filterer do
 
           context "when tenant is not mapped to cloud tenant" do
             it 'returns all cloud templates when user is admin' do
-              User.current_user = admin_user
-              results = described_class.filtered(TemplateCloud, :user => admin_user)
-              expect(results).to match_array(TemplateCloud.all)
+              User.with_user(admin_user) do
+                results = described_class.filtered(TemplateCloud)
+                expect(results).to match_array(TemplateCloud.all)
+              end
             end
 
             context "when user is restricted user" do
@@ -1026,22 +1038,23 @@ RSpec.describe Rbac::Filterer do
               let!(:volume_template_openstack_1) { FactoryBot.create(:template_openstack, :tenant => tenant_3, :publicly_available => true) }
 
               it "returns all public cloud templates and its descendants" do
-                User.current_user = user_2
+                User.with_user(user_2) do
+                  results = described_class.filtered(VmOrTemplate)
+                  expect(results).to match_array([cloud_template, cloud_template_root, volume_template_openstack_1])
 
-                results = described_class.filtered(VmOrTemplate, :user => user_2)
-                expect(results).to match_array([cloud_template, cloud_template_root, volume_template_openstack_1])
-
-                results = described_class.filtered(TemplateCloud, :user => user_2)
-                expect(results).to match_array([cloud_template, cloud_template_root, volume_template_openstack_1])
+                  results = described_class.filtered(TemplateCloud)
+                  expect(results).to match_array([cloud_template, cloud_template_root, volume_template_openstack_1])
+                end
               end
 
               context "should ignore other tenant's private cloud templates" do
                 let!(:cloud_template) { FactoryBot.create(:template_openstack, :tenant => tenant_3, :publicly_available => false) }
                 let!(:volume_template_openstack_2) { FactoryBot.create(:template_openstack, :tenant => tenant_3, :publicly_available => false) }
                 it "returns public templates" do
-                  User.current_user = user_2
-                  results = described_class.filtered(TemplateCloud, :user => user_2)
-                  expect(results).to match_array([cloud_template_root, volume_template_openstack_1])
+                  User.with_user(user_2) do
+                    results = described_class.filtered(TemplateCloud)
+                    expect(results).to match_array([cloud_template_root, volume_template_openstack_1])
+                  end
                 end
               end
             end
@@ -1052,26 +1065,29 @@ RSpec.describe Rbac::Filterer do
 
             it "finds tenant's private cloud templates" do
               cloud_template2 = FactoryBot.create(:template_openstack, :tenant => tenant_2, :publicly_available => false)
-              User.current_user = user_2
-              results = described_class.filtered(TemplateCloud, :user => user_2)
-              expect(results).to match_array([cloud_template2])
+              User.with_user(user_2) do
+                results = described_class.filtered(TemplateCloud)
+                expect(results).to match_array([cloud_template2])
+              end
             end
 
             it "finds tenant's private and public cloud templates" do
               cloud_template2 = FactoryBot.create(:template_openstack, :tenant => tenant_2, :publicly_available => false)
               cloud_template3 = FactoryBot.create(:template_openstack, :tenant => tenant_2, :publicly_available => true)
-              User.current_user = user_2
-              results = described_class.filtered(TemplateCloud, :user => user_2)
-              expect(results).to match_array([cloud_template2, cloud_template3])
+              User.with_user(user_2) do
+                results = described_class.filtered(TemplateCloud)
+                expect(results).to match_array([cloud_template2, cloud_template3])
+              end
             end
 
             it "ignores other tenant's private templates" do
               cloud_template2 = FactoryBot.create(:template_openstack, :tenant => tenant_2, :publicly_available => false)
               cloud_template3 = FactoryBot.create(:template_openstack, :tenant => tenant_2, :publicly_available => true)
               FactoryBot.create(:template_openstack, :tenant => default_tenant, :publicly_available => false)
-              User.current_user = user_2
-              results = described_class.filtered(TemplateCloud, :user => user_2)
-              expect(results).to match_array([cloud_template2, cloud_template3])
+              User.with_user(user_2) do
+                results = described_class.filtered(TemplateCloud)
+                expect(results).to match_array([cloud_template2, cloud_template3])
+              end
             end
 
             it "finds other tenant's public templates" do
@@ -1079,9 +1095,10 @@ RSpec.describe Rbac::Filterer do
               cloud_template3 = FactoryBot.create(:template_openstack, :tenant => tenant_2, :publicly_available => true)
               cloud_template4 = FactoryBot.create(:template_openstack, :tenant => default_tenant, :publicly_available => true)
               FactoryBot.create(:template_openstack, :tenant => default_tenant, :publicly_available => false)
-              User.current_user = user_2
-              results = described_class.filtered(TemplateCloud, :user => user_2)
-              expect(results).to match_array([cloud_template2, cloud_template3, cloud_template4])
+              User.with_user(user_2) do
+                results = described_class.filtered(TemplateCloud)
+                expect(results).to match_array([cloud_template2, cloud_template3, cloud_template4])
+              end
             end
           end
         end
@@ -1152,29 +1169,21 @@ RSpec.describe Rbac::Filterer do
         }
       end
 
-      # NOTE:  Think long and hard before you consider removing this test.
-      # Many-a-hours wasted here determining this bug that resulted in
-      # re-adding this test again.
+      # We've had an on and off again success with polymorphics (first documented in 2015 by Greg Tanzillo)
+      # references().includes() with polymorphic does not work
+      # now that we've converted to preload and eager_load, this is no longer an issue
       #
-      # 2nd NOTE:  I did think (and wrote the above comment as well), however,
-      # now it seems we DO NOT SUPPORT polymorphic code, since we removed it
-      # here:
-      #
-      #   https://github.com/ManageIQ/manageiq/commit/8cc2277b
-      #
-      # That said, we should make sure this is erroring and no other callers
-      # are trying to do this (example:  MiqReport), so make sure this raises
-      # an error to inform the caller that fixing needs to happen.
+      # Since we've been so mix and match, please leave this test in here
       #
       it "raises an error when a polymorphic reflection is included and referenced" do
-        # NOTE: Fails if :references is passed with a value, or with no key,
-        # which it uses :include_for_find as the default.
+        # This is not valid. You should not be able to pass a polymorphic to references
         expect do
           described_class.search :class            => "MetricRollup",
                                  :include_for_find => @include,
                                  :references       => @include
         end.to raise_error(Rbac::PolymorphicError)
 
+        # defaults to includes when no :references passed in
         expect do
           described_class.search :class            => "MetricRollup",
                                  :include_for_find => @include
@@ -1182,18 +1191,53 @@ RSpec.describe Rbac::Filterer do
       end
 
       it "does not raise an error when a polymorphic reflection is only included" do
-        # NOTE:  if references is passed in, but is blank, then it is fine
+        expect do
+          described_class.search :class            => "MetricRollup",
+                                 :include_for_find => @include,
+                                 :references       => MetricRollup.prune_references(@include)
+        end.not_to raise_error
+
+        # NOTE:  if a nil or blank references is passed in, then it doesn't default to the include_for_find and is fine
         expect do
           described_class.search :class            => "MetricRollup",
                                  :include_for_find => @include,
                                  :references       => {}
         end.not_to raise_error
 
+        # Any references with a polymorphic in the includes (and a supported references value should work. (it wasn't working before)
         expect do
           described_class.search :class            => "MetricRollup",
                                  :include_for_find => @include,
-                                 :references       => nil
+                                 :references       => :parent_host
         end.not_to raise_error
+      end
+    end
+
+    context "for Switches" do
+      let(:owned_host) { FactoryBot.create(:host, :ext_management_system => owned_ems) }
+      let(:other_host) { FactoryBot.create(:host, :ext_management_system => other_ems) }
+      let(:child_host) { FactoryBot.create(:host, :ext_management_system => child_ems) }
+
+      let(:owned_switch) { FactoryBot.create(:switch, :host => owned_host) }
+      let(:other_switch) { FactoryBot.create(:switch, :host => other_host) }
+      let(:child_switch) { FactoryBot.create(:switch, :host => child_host) }
+
+      it "finds own switches and child switches" do
+        owned_switch
+        other_switch
+        child_switch
+
+        results = described_class.filtered(Switch, :user => owner_user)
+        expect(results).to match_array([owned_switch, child_switch])
+      end
+
+      it "doesn't finds parent switches" do
+        owned_switch
+        other_switch
+        child_switch
+
+        results = described_class.filtered(Switch, :user => child_user)
+        expect(results).to match_array([child_switch])
       end
     end
   end
@@ -1212,10 +1256,33 @@ RSpec.describe Rbac::Filterer do
     end
 
     def get_rbac_results_for_and_expect_objects(klass, expected_objects)
-      User.current_user = user
+      User.with_user(user) do
+        results = described_class.search(:targets => klass).first
+        expect(results).to match_array(expected_objects)
+      end
+    end
 
-      results = described_class.search(:targets => klass).first
-      expect(results).to match_array(expected_objects)
+    describe "#rbac_filtered_objects" do
+      # tree 1
+      let(:ems)     { FactoryBot.create(:ems_vmware) }
+      let(:folder)  { FactoryBot.create(:ems_folder, :ext_management_system => ems) }
+      let(:vm)      { FactoryBot.create(:vm_vmware, :ext_management_system => ems).tap { |vm| folder.add_child(vm) } }
+      # tree 2
+      let(:ems2)    { FactoryBot.create(:ems_vmware) }
+      let(:folder2) { FactoryBot.create(:ems_folder, :ext_management_system => ems2) }
+      let(:vm2)     { FactoryBot.create(:vm_vmware, :ext_management_system => ems2).tap { |vm| folder2.add_child(vm) } }
+
+      before do
+        EvmSpecHelper.create_guid_miq_server_zone
+        user.current_group.update(:entitlement => Entitlement.create!(:managed_filters => [[@tags[2]]]))
+      end
+
+      it "properly calls RBAC" do
+        vm.tag_with(@tags[2], :ns => '*')
+        vm2
+
+        expect(Rbac.filtered(EmsFolder, :match_via_descendants => "VmOrTemplate", :user => user)).to eq([folder])
+      end
     end
 
     context "with User and Group" do
@@ -1257,19 +1324,93 @@ RSpec.describe Rbac::Filterer do
         end
       end
 
-      it "returns users from current user's groups" do
-        other_user.miq_groups << group
-        get_rbac_results_for_and_expect_objects(User, [user, other_user])
-      end
-
-      it "returns user's groups" do
-        _expected_groups = [group, other_group] # this will create more groups than 2
-        get_rbac_results_for_and_expect_objects(MiqGroup, user.miq_groups)
-      end
-
-      context "with self-service user" do
+      context "with other users in the group" do
         before do
-          allow_any_instance_of(MiqGroup).to receive_messages(:self_service? => true)
+          other_user.miq_groups << group
+        end
+
+        it "returns users from current user's groups" do
+          get_rbac_results_for_and_expect_objects(User, [user, other_user])
+        end
+
+        it "returns user's groups" do
+          get_rbac_results_for_and_expect_objects(MiqGroup, [group])
+        end
+      end
+
+      context "with a user in a shared group" do
+        let(:shared_group) { FactoryBot.create(:miq_group, :tenant => default_tenant) }
+
+        before do
+          other_user.miq_groups << shared_group
+          user.miq_groups << shared_group
+        end
+
+        context "and the current_group is the shared group" do
+          before { user.current_group = shared_group }
+
+          it "returns users from all of the current user's groups" do
+            get_rbac_results_for_and_expect_objects(User, [user, other_user])
+          end
+
+          it "returns user's groups" do
+            get_rbac_results_for_and_expect_objects(MiqGroup, [group, shared_group])
+          end
+        end
+
+        context "and the user's current_group is not the shared group" do
+          before { user.current_group = group }
+
+          it "returns users from all of the current user's groups" do
+            get_rbac_results_for_and_expect_objects(User, [user, other_user])
+          end
+
+          it "returns user's groups" do
+            get_rbac_results_for_and_expect_objects(MiqGroup, [group, shared_group])
+          end
+        end
+      end
+
+      context "with a user in a super_administrator group" do
+        before do
+          admin_user # ensure we create another user as an admin user
+          other_user # ensure we create another user in another regular group
+
+          user.miq_groups << admin_group
+          user.miq_groups << other_group
+        end
+
+        context "and the current_group is the super_administrator group" do
+          before { user.current_group = admin_group }
+
+          it "returns all users" do
+            get_rbac_results_for_and_expect_objects(User, User.all.to_a)
+          end
+
+          it "returns user's groups" do
+            get_rbac_results_for_and_expect_objects(MiqGroup, MiqGroup.all.to_a)
+          end
+        end
+
+        context "and the current_group is not the super_administrator group" do
+          before { user.current_group = group }
+
+          it "returns users from all of the current user's groups except admins" do
+            get_rbac_results_for_and_expect_objects(User, [user, other_user])
+          end
+
+          it "returns user's groups except admins" do
+            get_rbac_results_for_and_expect_objects(MiqGroup, [group, other_group])
+          end
+        end
+      end
+
+      context "with a self_service user" do
+        let(:user)  { FactoryBot.create(:user, :role => "user_self_service") }
+        let(:group) { user.miq_groups.detect { |g| g.description == "EvmGroup-user_self_service" } }
+
+        before do
+          other_user # ensure we create another user in another group
         end
 
         it "returns only the current user" do
@@ -1277,36 +1418,48 @@ RSpec.describe Rbac::Filterer do
         end
 
         it "returns only the current group" do
-          get_rbac_results_for_and_expect_objects(MiqGroup, [user.current_group])
+          get_rbac_results_for_and_expect_objects(MiqGroup, [group])
+        end
+
+        context "that is in multiple groups" do
+          before { user.miq_groups << other_group }
+
+          context "and the current_group is the self_service group" do
+            before { user.current_group = group }
+
+            it "returns only the current user" do
+              get_rbac_results_for_and_expect_objects(User, [user])
+            end
+
+            it "returns only the current group" do
+              get_rbac_results_for_and_expect_objects(MiqGroup, [group])
+            end
+          end
+
+          context "and the current_group is not the self_service group" do
+            before { user.current_group = other_group }
+
+            it "returns users from all of the current user's groups" do
+              get_rbac_results_for_and_expect_objects(User, [user, other_user])
+            end
+
+            it "returns user's groups" do
+              get_rbac_results_for_and_expect_objects(MiqGroup, [other_group])
+            end
+          end
         end
       end
 
       context 'with EvmRole-tenant_administrator' do
-        let(:rbac_tenant) do
-          FactoryBot.create(:miq_product_feature, :identifier => MiqProductFeature::TENANT_ADMIN_FEATURE)
-        end
-
-        let(:tenant_administrator_user_role) do
-          FactoryBot.create(:miq_user_role, :name => MiqUserRole::DEFAULT_TENANT_ROLE_NAME, :miq_product_features => [rbac_tenant])
-        end
-
-        let!(:super_administrator_user_role) do
-          FactoryBot.create(:miq_user_role, :role => "super_administrator")
-        end
-
-        let(:group) do
-          FactoryBot.create(:miq_group, :tenant => default_tenant, :miq_user_role => tenant_administrator_user_role)
-        end
-
-        let!(:user_role) do
-          FactoryBot.create(:miq_user_role, :role => "user")
-        end
-
-        let!(:other_group) do
-          FactoryBot.create(:miq_group, :tenant => default_tenant, :miq_user_role => user_role)
-        end
-
+        let(:rbac_tenant) { FactoryBot.create(:miq_product_feature, :identifier => MiqProductFeature::TENANT_ADMIN_FEATURE) }
+        let(:tenant_administrator_user_role) { FactoryBot.create(:miq_user_role, :name => MiqUserRole::DEFAULT_TENANT_ROLE_NAME, :miq_product_features => [rbac_tenant]) }
+        let!(:super_administrator_user_role) { FactoryBot.create(:miq_user_role, :role => "super_administrator") }
+        let(:group) { FactoryBot.create(:miq_group, :tenant => default_tenant, :miq_user_role => tenant_administrator_user_role) }
+        let!(:user_role) { FactoryBot.create(:miq_user_role, :role => "user") }
+        let!(:other_group) { FactoryBot.create(:miq_group, :tenant => default_tenant, :miq_user_role => user_role) }
         let!(:user) { FactoryBot.create(:user, :miq_groups => [group]) }
+        let(:super_admin_group) { FactoryBot.create(:miq_group, :tenant => default_tenant, :miq_user_role => super_administrator_user_role) }
+        let!(:super_admin_user) { FactoryBot.create(:user, :miq_groups => [super_admin_group]) }
 
         it 'can see all roles except for EvmRole-super_administrator' do
           expect(MiqUserRole.count).to eq(3)
@@ -1328,12 +1481,6 @@ RSpec.describe Rbac::Filterer do
           default_group_for_tenant = user.current_tenant.miq_groups.where(:group_type => "tenant").first
           get_rbac_results_for_and_expect_objects(MiqGroup, [another_tenant_group, default_group_for_tenant])
         end
-
-        let(:super_admin_group) do
-          FactoryBot.create(:miq_group, :tenant => default_tenant, :miq_user_role => super_administrator_user_role)
-        end
-
-        let!(:super_admin_user) { FactoryBot.create(:user, :miq_groups => [super_admin_group]) }
 
         it 'can see all users except for user with group with role EvmRole-super_administrator' do
           expect(User.count).to eq(2)
@@ -1502,8 +1649,8 @@ RSpec.describe Rbac::Filterer do
           end
 
           it "returns the correct class for different classes of targets" do
-            @ems3 = FactoryBot.create(:ems_vmware, :name => 'ems3')
-            @ems4 = FactoryBot.create(:ems_microsoft, :name => 'ems4')
+            @ems3 = FactoryBot.create(:ems_infra, :name => 'ems3')
+            @ems4 = FactoryBot.create(:ems_cloud, :name => 'ems4')
 
             targets = [@ems2, @ems4, @ems3, @ems]
 
@@ -1922,11 +2069,13 @@ RSpec.describe Rbac::Filterer do
           describe ".search" do
             let!(:network_object) do
               return network_manager if network_model == ManageIQ::Providers::NetworkManager
+
               FactoryBot.create(network_model.underscore, :ext_management_system => network_manager)
             end
 
             let!(:network_object_with_different_network_manager) do
               return network_manager_1 if network_model == ManageIQ::Providers::NetworkManager
+
               FactoryBot.create(network_model.underscore,  :ext_management_system => network_manager_1)
             end
 
@@ -2015,7 +2164,7 @@ RSpec.describe Rbac::Filterer do
     end
 
     context 'with network models' do
-      NETWORK_MODELS = %w(
+      NETWORK_MODELS = %w[
         CloudNetwork
         CloudSubnet
         FloatingIp
@@ -2023,7 +2172,7 @@ RSpec.describe Rbac::Filterer do
         NetworkPort
         NetworkRouter
         SecurityGroup
-      ).freeze
+      ].freeze
 
       NETWORK_MODELS.each do |network_model|
         describe ".search" do
@@ -2071,7 +2220,7 @@ RSpec.describe Rbac::Filterer do
           FactoryBot.create(:host, :name => "Host4", :hostname => "host4.local")
         ].each_with_index do |host, i|
           grp = i + 1
-          guest_os = %w(_none_ windows ubuntu windows ubuntu)[grp]
+          guest_os = %w[_none_ windows ubuntu windows ubuntu][grp]
           vm = FactoryBot.build(:vm_vmware, :name => "Test Group #{grp} VM #{i}")
           vm.hardware = FactoryBot.build(:hardware, :cpu_sockets => (grp * 2), :memory_mb => (grp * 1.megabytes), :guest_os => guest_os)
           vm.host = host
@@ -2403,7 +2552,7 @@ RSpec.describe Rbac::Filterer do
         expect(recs.map(&:id)).to eq(expected_order.reverse.map(&:id))
       end
 
-      it "remembers distinct" do
+      it "remembers distinct (tagged version)" do
         # create vms with many disks. so a missing distinct would return 3*3 => 9
         vms = FactoryBot.create_list(:vm_infra, 3, :miq_group => tagged_group)
         vms.each do |vm|
@@ -2423,6 +2572,58 @@ RSpec.describe Rbac::Filterer do
 
         expect(attrs[:auth_count]).to eq(3)
         expect(recs.map(&:id)).to eq(vms.map(&:id))
+      end
+
+      it "remembers distinct (non-tagged version)" do
+        # create vms with many disks. so a missing distinct would return 3*3 => 9
+        # dropping tags was causing issues. so manually running through that one
+        vms = FactoryBot.create_list(:vm_infra, 3, :miq_group => tagged_group)
+        vms.each do |vm|
+          # used by rbac filter
+          vm.tag_with("/managed/environment/prod", :ns => "*")
+          hw = FactoryBot.create(:hardware, :cpu_sockets => 4, :memory_mb => 3.megabytes, :vm => vm)
+          FactoryBot.create_list(:disk, 3, :device_type => "disk", :size => 10_000, :hardware_id => hw.id)
+        end
+
+        recs, attrs = Rbac.search(:targets          => Vm,
+                                  :include_for_find => {:ext_management_system => {}, :hardware => {:disks => {}}},
+                                  :extra_cols       => %w[ram_size_in_bytes],
+                                  :use_sql_view     => true,
+                                  :limit            => 20,
+                                  :user             => User.super_admin,
+                                  :order            => :updated_on)
+
+        expect(attrs[:auth_count]).to eq(3)
+        expect(recs.map(&:id)).to eq(vms.map(&:id))
+      end
+
+      it "handles polymorphic" do
+        EvmSpecHelper.local_miq_server
+
+        resource = FactoryBot.create(:host_vmware)
+        time_profile = FactoryBot.create(:time_profile_utc)
+
+        # Generate 2 days of metrics with a gently rising slope
+        2.times do |i|
+          FactoryBot.create(:metric_rollup_host_daily,
+            :resource     => resource,
+            :timestamp    => i.days.ago.beginning_of_day,
+            :time_profile => time_profile,
+            :min_max      => {
+              :max_cpu_usagemhz_rate_average => 3_000 - i * 100,
+              :max_derived_cpu_available     => 5_000
+            }
+          )
+        end
+
+        recs, attrs = Rbac.search(:targets          => MetricRollup,
+                                  :include_for_find => {:resource => {}, :parent_host => {}},
+                                  :references       => MetricRollup.prune_references({:resource => {}, :parent_host => {}}),
+                                  :extra_cols       => [:v_derived_storage_used],
+                                  :use_sql_view     => true,
+                                  :limit            => 20,
+                                  :order            => :id)
+        expect(attrs[:auth_count]).to eq(2)
       end
     end
   end
@@ -2458,9 +2659,30 @@ RSpec.describe Rbac::Filterer do
       expect(described_class.filtered(Vm.where(:location => "good"))).to match_array(matched_vms)
     end
 
-    it "support aaarm object" do
-      expect(VimPerformanceTrend).to receive(:find).with(:all, :include => {:a => {}}).and_return([:good])
-      expect(described_class.filtered(VimPerformanceTrend, :include_for_find => {:a => {}}).to_a).to match_array([:good])
+    it "support ActsAsArModel object" do
+      expect(PglogicalSubscription).to receive(:find).with(:all, {:include => {:a => {}}}).and_return([:good])
+      expect(described_class.filtered(PglogicalSubscription, :include_for_find => {:a => {}}).to_a).to match_array([:good])
+    end
+
+    it "supports ActsAsArScope object all target" do
+      all_vms
+
+      klass = ManageIQ::Providers::InfraManager::VmOrTemplate
+      expect(klass).to receive(:all).and_call_original
+      expect(described_class.filtered(klass, :include_for_find => {:host => {}})).to match_array(all_vms)
+    end
+
+    it "supports ActsAsArScope object scoping" do
+      all_vms
+      filter = MiqExpression.new("=" => {"field" => "Vm-location", "value" => "good"})
+      expect(described_class.filtered(ManageIQ::Providers::InfraManager::VmOrTemplate, :filter => filter)).to match_array(matched_vms)
+    end
+
+    it "understands ActsAsArScope includes (invalid)" do
+      klass = ManageIQ::Providers::InfraManager::VmOrTemplate
+      expect {
+        expect(described_class.filtered(klass, :include_for_find => {:missing_association => {}}).to_a).to eq(VmOrTemplate.new)
+      }.to raise_error(ActiveRecord::ConfigurationError)
     end
 
     # it returns objects too
@@ -2479,7 +2701,7 @@ RSpec.describe Rbac::Filterer do
     it "supports limits in ruby with limits on scopes" do
       filter = MiqExpression.new("=" => {"field" => "Vm-location", "value" => "b"})
       # force this filter to be evaluated in ruby
-      expect(filter).to receive(:sql_supports_atom?).and_return(false)
+      expect(filter).to receive(:sql_supports_atom?).at_least(:once).and_return(false)
 
       FactoryBot.create_list(:vm_vmware, 3, :location => "a")
       FactoryBot.create_list(:vm_vmware, 3, :location => "b")
@@ -2494,7 +2716,7 @@ RSpec.describe Rbac::Filterer do
       FactoryBot.create(:vm_vmware, :location => "a")
       FactoryBot.create(:vm_vmware, :location => "b")
       FactoryBot.create(:vm_vmware, :location => "a")
-      expect(described_class.filtered(Vm.all.order(:location)).map(&:location)).to eq(%w(a a b))
+      expect(described_class.filtered(Vm.all.order(:location)).map(&:location)).to eq(%w[a a b])
     end
 
     it "returns empty array for out-of-bounds condition when limits cannot be applied in SQL" do
@@ -2521,39 +2743,43 @@ RSpec.describe Rbac::Filterer do
 
     let(:klass)            { VmOrTemplate }
     let(:scope)            { klass.all }
-    let(:include_for_find) { { :miq_server => {} } }
-    let(:exp_includes)     { { :host => {} } }
+    let(:include_for_find) { {:miq_server => {}} }
+    let(:exp_includes)     { {:host => {}} }
 
     it "adds include_for_find .references to the scope" do
-      method_args      = [scope, klass, include_for_find, nil]
+      method_args      = [scope, klass, include_for_find, include_for_find, nil]
       resulting_scope  = subject.send(:include_references, *method_args)
 
-      expect(resulting_scope.references_values).to eq(%w[miq_servers])
+      expect(resulting_scope.preload_values).to eq([include_for_find])
+      expect(resulting_scope.eager_load_values).to eq([include_for_find])
     end
 
     it "adds exp_includes .references to the scope" do
-      method_args      = [scope, klass, nil, exp_includes]
+      method_args      = [scope, klass, nil, nil, exp_includes]
       resulting_scope  = subject.send(:include_references, *method_args)
 
-      expect(resulting_scope.references_values).to eq(%w[hosts])
+      expect(resulting_scope.preload_values).to eq([])
+      expect(resulting_scope.eager_load_values).to eq([exp_includes])
     end
 
     it "adds include_for_find and exp_includes .references to the scope" do
-      method_args      = [scope, klass, include_for_find, exp_includes]
+      method_args      = [scope, klass, include_for_find, include_for_find, exp_includes]
       resulting_scope  = subject.send(:include_references, *method_args)
 
-      expect(resulting_scope.references_values).to eq(%w[miq_servers hosts])
+      expect(resulting_scope.preload_values).to eq([include_for_find])
+      expect(resulting_scope.eager_load_values).to match_array([exp_includes, include_for_find])
     end
 
-    context "if the include is polymorphic" do
-      let(:klass)            { MetricRollup }
-      let(:include_for_find) { { :resource => {} } }
+    context "if the include is an array" do
+      let(:include_for_find) { [:miq_server] }
+      let(:exp_includes)     { [:host] }
 
-      it "does not add .references to the scope" do
-        method_args      = [scope, klass, include_for_find, nil]
+      it "adds include_for_find and exp_includes .references to the scope" do
+        method_args      = [scope, klass, include_for_find, include_for_find, exp_includes]
         resulting_scope  = subject.send(:include_references, *method_args)
 
-        expect(resulting_scope.references_values).to eq([])
+        expect(resulting_scope.preload_values).to match_array([:miq_server])
+        expect(resulting_scope.eager_load_values).to match_array([:miq_server, :host])
       end
     end
   end

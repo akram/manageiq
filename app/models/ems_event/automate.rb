@@ -3,6 +3,8 @@ class EmsEvent
     extend ActiveSupport::Concern
 
     def manager_refresh(sync: false)
+      return if ext_management_system&.supports?(:streaming_refresh)
+
       refresh_targets = manager_refresh_targets
 
       return if refresh_targets.blank?
@@ -16,7 +18,7 @@ class EmsEvent
       targets = targets.flatten
       return if targets.blank?
 
-      refresh_targets = targets.collect { |t| get_target("#{t}_refresh_target") unless t.blank? }.compact.uniq
+      refresh_targets = targets.collect { |t| get_target("#{t}_refresh_target") if t.present? }.compact.uniq
       return if refresh_targets.empty?
 
       EmsRefresh.queue_refresh(refresh_targets, nil, :create_task => sync)
@@ -88,7 +90,7 @@ class EmsEvent
     private
 
     def parse_policy_parameters(target_str, policy_event, param)
-      target         = get_target(target_str)     unless target_str.blank?
+      target         = get_target(target_str)     if target_str.present?
       policy_event ||= event_type
       policy_src     = parse_policy_source(target, param) if target
 

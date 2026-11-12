@@ -39,25 +39,25 @@ RSpec.describe Storage do
 
   it "#scan_complete?" do
     miq_task = FactoryBot.create(:miq_task)
-    miq_task.context_data = {:targets => [], :complete => [], :pending  => {}}
+    miq_task.context_data = {:targets => [], :complete => [], :pending => {}}
     miq_task.context_data[:targets]  = [123, 456, 789]
     miq_task.context_data[:complete] = []
     expect(Storage.scan_complete?(miq_task)).to be_falsey
 
-    miq_task.context_data[:complete]  = [123, 456, 789]
+    miq_task.context_data[:complete] = [123, 456, 789]
     expect(Storage.scan_complete?(miq_task)).to be_truthy
   end
 
   it "#scan_complete_message" do
     miq_task = FactoryBot.create(:miq_task)
-    miq_task.context_data = {:targets => [], :complete => [], :pending  => {}}
-    miq_task.context_data[:targets]  = [123, 456, 789]
+    miq_task.context_data = {:targets => [], :complete => [], :pending => {}}
+    miq_task.context_data[:targets] = [123, 456, 789]
     expect(Storage.scan_complete_message(miq_task)).to eq("SmartState Analysis for 3 storages complete")
   end
 
   it "#scan_update_message" do
     miq_task = FactoryBot.create(:miq_task)
-    miq_task.context_data = {:targets => [], :complete => [], :pending  => {}}
+    miq_task.context_data = {:targets => [], :complete => [], :pending => {}}
     miq_task.context_data[:targets]  = [123, 456, 789]
     miq_task.context_data[:complete] = [123]
     miq_task.context_data[:pending][789] = 98765
@@ -119,7 +119,7 @@ RSpec.describe Storage do
 
     it "#scan_storages_unprocessed" do
       miq_task = FactoryBot.create(:miq_task)
-      miq_task.context_data = {:targets => [], :complete => [], :pending  => {}}
+      miq_task.context_data = {:targets => [], :complete => [], :pending => {}}
       miq_task.context_data[:targets]  = [@storage1.id, @storage2.id, @storage3.id]
       miq_task.context_data[:complete] = []
       miq_task.context_data[:pending]  = {}
@@ -134,7 +134,7 @@ RSpec.describe Storage do
       miq_task.context_data[:pending].delete(@storage2.id)
       expect(Storage.scan_storages_unprocessed(miq_task)).to match_array [@storage1.id, @storage2.id]
 
-      miq_task.context_data[:complete]  = [@storage1.id, @storage2.id, @storage3.id]
+      miq_task.context_data[:complete] = [@storage1.id, @storage2.id, @storage3.id]
       expect(Storage.scan_storages_unprocessed(miq_task)).to eq([])
     end
 
@@ -239,7 +239,7 @@ RSpec.describe Storage do
         it "#scan_queue" do
           bogus_id = @storage1.id - 1
           miq_task = FactoryBot.create(:miq_task)
-          miq_task.context_data = {:targets => [], :complete => [], :pending  => {}}
+          miq_task.context_data = {:targets => [], :complete => [], :pending => {}}
           miq_task.context_data[:targets]  = [bogus_id, @storage1.id, @storage2.id, @storage3.id]
           miq_task.context_data[:complete] = []
           miq_task.context_data[:pending]  = {}
@@ -281,7 +281,7 @@ RSpec.describe Storage do
           max_qitems_per_scan_request = 1
           allow(Storage).to receive_messages(:max_qitems_per_scan_request => max_qitems_per_scan_request)
           miq_task = FactoryBot.create(:miq_task)
-          miq_task.context_data = {:targets => [], :complete => [], :pending  => {}}
+          miq_task.context_data = {:targets => [], :complete => [], :pending => {}}
           miq_task.context_data[:targets]  = [@storage1.id, @storage2.id, @storage3.id]
           miq_task.context_data[:complete] = []
           miq_task.context_data[:pending]  = {}
@@ -294,7 +294,7 @@ RSpec.describe Storage do
           expect(miq_task.context_data[:complete]).to eq([])
           expect(miq_task.context_data[:pending].length).to eq(0)
 
-          qitem1  = FactoryBot.create(:miq_queue)
+          qitem1 = FactoryBot.create(:miq_queue)
           miq_task.context_data[:pending][@storage1.id] = qitem1.id
           miq_task.save!
           expect(Storage).to receive(:scan_queue_watchdog).with(miq_task.id).once
@@ -327,7 +327,7 @@ RSpec.describe Storage do
 
         it "#scan_complete_callback" do
           miq_task = FactoryBot.create(:miq_task)
-          miq_task.context_data = {:targets => [], :complete => [], :pending  => {}}
+          miq_task.context_data = {:targets => [], :complete => [], :pending => {}}
           miq_task.context_data[:targets]  = [@storage1.id, @storage2.id, @storage3.id]
           miq_task.context_data[:complete] = []
           miq_task.context_data[:pending][@storage1.id] = 123
@@ -395,13 +395,26 @@ RSpec.describe Storage do
   end
 
   context "#supports?(:smartstate_analysis)" do
-    it "returns true for VMware Storage when queried whether it supports smartstate analysis" do
-      storage = FactoryBot.create(:storage, :ext_management_system => FactoryBot.create(:ems_vmware_with_authentication))
+    it "supports smartstate if the ems supports smartstate analysis" do
+      ems = FactoryBot.create(:ems_vmware_with_authentication)
+      expect(ems.supports?(:smartstate_analysis)).to eq(true)
+      storage = FactoryBot.create(:storage_nfs, :ext_management_system => ems)
+
       expect(storage.supports?(:smartstate_analysis)).to eq(true)
     end
 
-    it "returns false for non-vmware Storage when queried whether it supports smartstate analysis" do
-      storage = FactoryBot.create(:storage, :ext_management_system => FactoryBot.create(:ems_microsoft_with_authentication))
+    it "doesn't support smartstate for an unknown store_type" do
+      ems = FactoryBot.create(:ems_vmware_with_authentication)
+      storage = FactoryBot.create(:storage_unknown, :ext_management_system => ems)
+
+      expect(storage.supports?(:smartstate_analysis)).to eq(false)
+    end
+
+    it "doesn't support smartstate for an ems that doesn't support smartstate analysis" do
+      ems = FactoryBot.create(:ems_cloud)
+      expect(ems.supports?(:smartstate_analysis)).not_to eq(true)
+      storage = FactoryBot.create(:storage_nfs, :ext_management_system => ems)
+
       expect(storage.supports?(:smartstate_analysis)).to_not eq(true)
     end
   end
@@ -504,6 +517,18 @@ RSpec.describe Storage do
       expect(storage.tenant_identity).to                eq(admin)
       expect(storage.tenant_identity.current_group).to  eq(Tenant.root_tenant.default_miq_group)
       expect(storage.tenant_identity.current_tenant).to eq(Tenant.root_tenant)
+    end
+  end
+
+  describe "#storage_type_supported_for_ssa?" do
+    it "detects bad storage type" do
+      storage = FactoryBot.build(:storage, :store_type => "XYZ")
+      expect(storage.storage_type_supported_for_ssa?).to eq(false)
+    end
+
+    it "detects good storage type" do
+      storage = FactoryBot.build(:storage, :store_type => "NFS")
+      expect(storage.storage_type_supported_for_ssa?).to eq(true)
     end
   end
 end

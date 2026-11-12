@@ -7,7 +7,9 @@ module OwnershipMixin
     belongs_to :evm_owner, :class_name => "User"
     belongs_to :miq_group
 
-    virtual_delegate :email, :name, :userid, :to => :evm_owner, :prefix => true, :allow_nil => true, :type => :string
+    virtual_attribute :evm_owner_email, :string, :through => :evm_owner, :source => :email
+    virtual_attribute :evm_owner_name, :string, :through => :evm_owner, :source => :name
+    virtual_attribute :evm_owner_userid, :string, :through => :evm_owner, :source => :userid
 
     # Determine whether the selected object is owned by the current user
     # Resulting SQL:
@@ -18,16 +20,16 @@ module OwnershipMixin
     #
     # explination:
     # At first it looks like a simple compare with evm_owner_id = current user id would suffice.
-    #   i.e.: t.grouping(arel_attribute(:evm_owner_id)]).eq(User.current_user.try(:id)))
+    #   i.e.: t.grouping(arel_table[:evm_owner_id]]).eq(User.current_user.try(:id)))
     #
     # But the code is written to support the same userid used across multiple regions. Assuming that they are
     # all the same user.
     virtual_attribute :owned_by_current_user, :boolean, :uses => :evm_owner, :arel => (lambda do |t|
       userid = User.current_userid.to_s.downcase
-      t.grouping(Arel::Nodes::NamedFunction.new("LOWER", [arel_attribute(:evm_owner_userid)]).eq(userid))
+      t.grouping(t.lower(t[:evm_owner_userid]).eq(userid))
     end)
 
-    virtual_delegate :owning_ldap_group, :to => "miq_group.description", :allow_nil => true, :type => :string
+    virtual_attribute :owning_ldap_group, :string, :through => :miq_group, :source => :description
 
     # Determine whether to return objects owned by the current user's miq_group
     # or not.
@@ -46,7 +48,7 @@ module OwnershipMixin
     virtual_attribute :owned_by_current_ldap_group, :boolean, :arel => (lambda do |t|
       ldap_group = User.current_user.try(:ldap_group).to_s.downcase
 
-      t.grouping(Arel::Nodes::NamedFunction.new("LOWER", [arel_attribute(:owning_ldap_group)]).eq(ldap_group))
+      t.grouping(t.lower(t[:owning_ldap_group]).eq(ldap_group))
     end)
   end
 
@@ -66,7 +68,7 @@ module OwnershipMixin
                   else
                     raise _("Unknown option, '%{name}'") % {:name => k}
                   end
-            obj.send("#{col}=", options[k])
+            obj.send(:"#{col}=", options[k])
           end
           obj.save
         rescue => err
@@ -92,11 +94,11 @@ module OwnershipMixin
     private
 
     def user_owned(user)
-      where(arel_table.grouping(Arel::Nodes::NamedFunction.new("LOWER", [arel_attribute(:evm_owner_userid)]).eq(user.userid.downcase)))
+      where(arel_table.grouping(arel_table.lower(arel_table[:evm_owner_userid]).eq(user.userid.downcase)))
     end
 
     def group_owned(miq_group)
-      where(arel_table.grouping(Arel::Nodes::NamedFunction.new("LOWER", [arel_attribute(:owning_ldap_group)]).eq(miq_group.description.downcase)))
+      where(arel_table.grouping(arel_table.lower(arel_table[:owning_ldap_group]).eq(miq_group.description.downcase)))
     end
   end
 

@@ -15,17 +15,48 @@ RSpec.describe MiqReportResult do
       stub_settings(settings)
 
       @rr1 = [
-        FactoryBot.create(:miq_report_result, :miq_report_id => 1, :created_on => (6.months + 1.days).to_i.seconds.ago.utc),
-        FactoryBot.create(:miq_report_result, :miq_report_id => 1, :created_on => (6.months - 1.days).to_i.seconds.ago.utc)
+        FactoryBot.create(:miq_report_result, :miq_report_id => 1, :created_on => (6.months + 1.day).to_i.seconds.ago.utc),
+        FactoryBot.create(:miq_report_result, :miq_report_id => 1, :created_on => (6.months - 1.day).to_i.seconds.ago.utc)
       ]
       @rr2 = [
         FactoryBot.create(:miq_report_result, :miq_report_id => 2, :created_on => (6.months + 2.days).to_i.seconds.ago.utc),
-        FactoryBot.create(:miq_report_result, :miq_report_id => 2, :created_on => (6.months + 1.days).to_i.seconds.ago.utc),
-        FactoryBot.create(:miq_report_result, :miq_report_id => 2, :created_on => (6.months - 1.days).to_i.seconds.ago.utc)
+        FactoryBot.create(:miq_report_result, :miq_report_id => 2, :created_on => (6.months + 1.day).to_i.seconds.ago.utc),
+        FactoryBot.create(:miq_report_result, :miq_report_id => 2, :created_on => (6.months - 1.day).to_i.seconds.ago.utc)
       ]
       @rr_orphaned = [
-        FactoryBot.create(:miq_report_result, :miq_report_id => nil, :created_on => (6.months - 1.days).to_i.seconds.ago.utc)
+        FactoryBot.create(:miq_report_result, :miq_report_id => nil, :created_on => (6.months - 1.day).to_i.seconds.ago.utc)
       ]
+    end
+
+    context "#purge_by_date" do
+      before do
+        MiqReportResult.all.each do |r|
+          r.binary_blob = FactoryBot.create(:binary_blob)
+          r.miq_report_result_details << FactoryBot.create(:MiqReportResultDetail)
+          r.save!
+        end
+      end
+
+      it "deletes rows and associated table rows" do
+        MiqReportResult.purge_by_date(Time.now + 1.day)
+
+        expect(MiqReportResult.count).to eq 0
+        expect(MiqReportResultDetail.count).to eq 0
+        expect(BinaryBlob.count).to eq 0
+      end
+
+      it "deletes associated records first, leaving parent rows in case of error" do
+        initial_count = MiqReportResult.count
+        allow(MiqReportResult).to receive(:purge_associated_records).and_raise
+
+        begin
+          MiqReportResult.purge_by_date(Time.now + 1.day)
+        rescue
+          # Ignore the error, we only care that it failed
+        end
+
+        expect(MiqReportResult.count).to eq initial_count # parent is kept due to a failure
+      end
     end
 
     context "#purge_mode_and_value" do
@@ -55,7 +86,7 @@ RSpec.describe MiqReportResult do
     end
 
     it "#purge_timer" do
-      EvmSpecHelper.create_guid_miq_server_zone
+      EvmSpecHelper.local_miq_server
 
       Timecop.freeze(Time.now) do
         described_class.purge_timer
@@ -73,7 +104,7 @@ RSpec.describe MiqReportResult do
 
     context "#purge_queue" do
       before do
-        EvmSpecHelper.create_guid_miq_server_zone
+        EvmSpecHelper.local_miq_server
         described_class.purge_queue(:remaining, 1)
       end
 

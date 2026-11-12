@@ -1,5 +1,7 @@
 class Condition < ApplicationRecord
   include UuidMixin
+  include ReadOnlyMixin
+
   before_validation :default_name_to_guid, :on => :create
 
   validates :name, :description, :expression, :towhat, :presence => true
@@ -30,7 +32,7 @@ class Condition < ApplicationRecord
 
   def applies_to?(rec, inputs = {})
     rec_model = rec.class.base_model.name
-    rec_model = "Vm" if rec_model.downcase.match("template")
+    rec_model = "Vm" if rec_model.downcase.match?("template")
 
     return false if towhat && rec_model != towhat
     return true  if applies_to_exp.nil?
@@ -49,7 +51,7 @@ class Condition < ApplicationRecord
 
     case mode
     when "tag"
-      unless %w(any all none).include?(expression["include"])
+      unless %w[any all none].include?(expression["include"])
         raise _("condition '%{name}', include value \"%{value}\", is invalid. Should be one of \"any, all or none\"") %
                 {:name => name, :value => expression["include"]}
       end
@@ -72,14 +74,7 @@ class Condition < ApplicationRecord
              when "object"
                expression.to_ruby
              end
-
-      MiqPolicy.logger.debug("MIQ(condition-eval): Name: #{name}, Expression before substitution: [#{expr.gsub(/\n/, " ")}]")
-
-      subst(expr, rec)
-
-      MiqPolicy.logger.debug("MIQ(condition-eval): Name: #{name}, Expression after substitution: [#{expr.gsub(/\n/, " ")}]")
-      result = do_eval(expr)
-      MiqPolicy.logger.info("MIQ(condition-eval): Name: #{name}, Expression evaluation result: [#{result}]")
+      result = subst_matches?(expr, rec)
     end
     result
   end
@@ -93,6 +88,7 @@ class Condition < ApplicationRecord
   def self.do_eval(expr)
     !!eval(expr)
   end
+  private_class_method :do_eval
 
   def self.subst(expr, rec)
     findexp = /<find>(.+?)<\/find>/im
@@ -110,9 +106,10 @@ class Condition < ApplicationRecord
 
     expr
   end
+  private_class_method :subst
 
   def self._subst(rec, opts, tag, mode)
-    ohash, ref, _object = options2hash(opts, rec)
+    ohash, ref = options2hash(opts, rec)
 
     case mode.downcase
     when "exist"
@@ -123,15 +120,16 @@ class Condition < ApplicationRecord
       else
         value = ref.nil? ? "" : Tag.list(ref, :ns => tag)
       end
-      value = MiqExpression.quote(value, ohash[:type] || "string")
+      value = MiqExpression.quote(value, ohash[:type]&.to_sym)
     when "count"
       ref.nil? ? value = 0 : value = ref.tag_list(:ns => tag).length
     when "registry"
       ref.nil? ? value = "" : value = registry_data(ref, tag, ohash)
-      value = MiqExpression.quote(value, ohash[:type] || "string")
+      value = MiqExpression.quote(value, ohash[:type]&.to_sym)
     end
     value
   end
+  private_class_method :_subst
 
   def self.collect_children(ref, methods)
     method = methods.shift
@@ -145,6 +143,7 @@ class Condition < ApplicationRecord
     end
     result
   end
+  private_class_method :collect_children
 
   def self._subst_find(rec, expr)
     MiqPolicy.logger.debug("MIQ(condition-_subst_find): Find Expression before substitution: [#{expr}]")
@@ -155,7 +154,7 @@ class Condition < ApplicationRecord
 
     listexp = /<value([^>]*)>(.+)<\/value>/im
     search =~ listexp
-    opts, _ref, _object = options2hash($1, rec)
+    opts, _ref = options2hash($1, rec)
     methods = $2.split("/")
     methods.shift
     methods.shift
@@ -165,8 +164,8 @@ class Condition < ApplicationRecord
     return false if l.empty?
 
     list = l.collect do |obj|
-      value = MiqExpression.quote(obj.send(attr), opts[:type])
-      value = value.gsub(/\\/, '\&\&') if value.kind_of?(String)
+      value = MiqExpression.quote(obj.send(attr), opts[:type]&.to_sym)
+      value = value.gsub("\\", '\&\&') if value.kind_of?(String)
       e = search.gsub(/<value[^>]*>.+<\/value>/im, value.to_s)
       obj if do_eval(e)
     end.compact
@@ -185,7 +184,7 @@ class Condition < ApplicationRecord
     if checkmode == "count"
       e = check.gsub(/<count>/i, list.length.to_s)
       left, operator, right = e.split
-      raise _("Illegal operator, '%{operator}'") % {:operator => operator} unless %w(== != < > <= >=).include?(operator)
+      raise _("Illegal operator, '%{operator}'") % {:operator => operator} unless %w[== != < > <= >=].include?(operator)
 
       MiqPolicy.logger.debug("MIQ(condition-_subst_find): Check Expression after substitution: [#{e}]")
       result = !!left.to_f.send(operator, right.to_f)
@@ -202,9 +201,9 @@ class Condition < ApplicationRecord
 
     result = true
     list.each do |obj|
-      opts, _ref, _object = options2hash(raw_opts, obj)
-      value = MiqExpression.quote(obj.send(checkattr), opts[:type])
-      value = value.gsub(/\\/, '\&\&') if value.kind_of?(String)
+      opts, _ref = options2hash(raw_opts, obj)
+      value = MiqExpression.quote(obj.send(checkattr), opts[:type]&.to_sym)
+      value = value.gsub("\\", '\&\&') if value.kind_of?(String)
       e = check.gsub(/<value[^>]*>.+<\/value>/im, value.to_s)
       MiqPolicy.logger.debug("MIQ(condition-_subst_find): Check Expression after substitution: [#{e}]")
 
@@ -220,7 +219,7 @@ class Condition < ApplicationRecord
   def self.options2hash(opts, rec)
     ref = rec
     ohash = {}
-    unless opts.blank?
+    if opts.present?
       val = nil
       opts.split(",").each do |o|
         attr, val = o.split("=")
@@ -229,13 +228,8 @@ class Condition < ApplicationRecord
       if ohash[:ref] != rec.class.to_s.downcase && !exclude_from_object_ref_substitution(ohash[:ref], rec)
         ref = rec.send(val) if val && rec.respond_to?(val)
       end
-
-      if ohash[:object]
-        object = val.to_sym
-        ref = inputs[object]
-      end
     end
-    return ohash, ref, object
+    return ohash, ref
   end
 
   def self.exclude_from_object_ref_substitution(reference, rec)
@@ -248,7 +242,7 @@ class Condition < ApplicationRecord
   def self.registry_data(ref, name, ohash)
     # <registry>HKLM\Software\Microsoft\Windows\CurrentVersion\explorer\Shell Folders\Common AppData</registry> == 'C:\Documents and Settings\All Users\Application Data'
     # <registry>HKLM\Software\Microsoft\Windows\CurrentVersion\explorer\Shell Folders : Common AppData</registry> == 'C:\Documents and Settings\All Users\Application Data'
-    return nil unless ref.respond_to?("registry_items")
+    return nil unless ref.respond_to?(:registry_items)
 
     registry_items = ref.registry_items
     if ohash[:key_exists]
@@ -301,5 +295,4 @@ class Condition < ApplicationRecord
 
     return c, status
   end
-
 end # class Condition

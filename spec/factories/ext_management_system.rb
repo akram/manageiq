@@ -141,7 +141,7 @@ FactoryBot.define do
 
   factory :automation_manager,
           :aliases => ["manageiq/providers/automation_manager"],
-          :class   => "ManageIQ::Providers::AnsibleTower::AutomationManager",
+          :class   => "ManageIQ::Providers::Awx::AutomationManager",
           :parent  => :ext_management_system
 
   factory :provisioning_manager,
@@ -160,16 +160,6 @@ FactoryBot.define do
 
   factory :ems_vmware_with_authentication,
           :parent => :ems_vmware do
-    authtype { "default" }
-  end
-
-  factory :ems_microsoft,
-          :aliases => ["manageiq/providers/microsoft/infra_manager"],
-          :class   => "ManageIQ::Providers::Microsoft::InfraManager",
-          :parent  => :ems_infra
-
-  factory :ems_microsoft_with_authentication,
-          :parent => :ems_microsoft do
     authtype { "default" }
   end
 
@@ -210,6 +200,23 @@ FactoryBot.define do
     end
   end
 
+  factory :ems_ovirt_with_metrics_authentication,
+          :parent => :ems_ovirt do
+    after(:create) do |x|
+      x.authentications << FactoryBot.create(:authentication_redhat_metric)
+    end
+  end
+
+  factory :ems_ovirt,
+          :aliases => ["manageiq/providers/ovirt/infra_manager"],
+          :class   => "ManageIQ::Providers::Ovirt::InfraManager",
+          :parent  => :ems_infra
+
+  factory :ems_ovirt_with_authentication,
+          :parent => :ems_ovirt do
+    authtype { "default" }
+  end
+
   factory :ems_openstack_infra,
           :aliases => ["manageiq/providers/openstack/infra_manager"],
           :class   => "ManageIQ::Providers::Openstack::InfraManager",
@@ -234,7 +241,7 @@ FactoryBot.define do
 
   factory :ems_openstack_infra_with_authentication,
           :parent => :ems_openstack_infra do
-    authtype { %w(default amqp) }
+    authtype { %w[default amqp] }
   end
 
   factory :ems_vmware_cloud,
@@ -270,13 +277,6 @@ FactoryBot.define do
     authtype { "default" }
   end
 
-  factory :ems_amazon_with_cloud_networks,
-          :parent => :ems_amazon do
-    after(:create) do |x|
-      2.times { x.cloud_networks << FactoryBot.create(:cloud_network_amazon) }
-    end
-  end
-
   factory :ems_azure,
           :aliases => ["manageiq/providers/azure/cloud_manager"],
           :class   => "ManageIQ::Providers::Azure::CloudManager",
@@ -305,19 +305,13 @@ FactoryBot.define do
 
   factory :ems_openstack_with_authentication,
           :parent => :ems_openstack do
-    authtype { %w(default amqp) }
+    authtype { %w[default amqp] }
   end
 
   factory :ems_openstack_network,
           :aliases => ["manageiq/providers/openstack/network_manager"],
           :class   => "ManageIQ::Providers::Openstack::NetworkManager",
           :parent  => :ems_network
-
-  factory :ems_nuage_network,
-          :aliases => ["manageiq/providers/nuage/network_manager"],
-          :class   => "ManageIQ::Providers::Nuage::NetworkManager",
-          :parent  => :ems_network
-
 
   factory :ems_nsxt_network,
           :aliases => ["manageiq/providers/nsxt/network_manager"],
@@ -382,20 +376,24 @@ FactoryBot.define do
 
   trait(:configuration_workflow) do
     after(:create) do |x|
-      type = (x.type.split("::")[0..2] + %w(AutomationManager ConfigurationWorkflow)).join("::")
+      type = (x.type.split("::")[0..2] + %w[AutomationManager ConfigurationWorkflow]).join("::")
       x.configuration_scripts << FactoryBot.create(:configuration_workflow, :type => type)
     end
   end
 
-  # Leaf classes for automation_manager
+  factory :embedded_automation_manager,
+          :aliases => ["manageiq/providers/embedded_automation_manager"],
+          :class   => "ManageIQ::Providers::EmbeddedAutomationManager",
+          :parent  => :automation_manager
 
+  # Leaf classes for automation_manager
   factory :embedded_automation_manager_ansible,
           :aliases => ["manageiq/providers/embedded_ansible/automation_manager"],
           :class   => "ManageIQ::Providers::EmbeddedAnsible::AutomationManager",
-          :parent  => :automation_manager do
-    provider {
+          :parent  => :embedded_automation_manager do
+    provider do
       raise "DO NOT USE!  Use :provider_embedded_ansible and reference the automation_manager from that record"
-    }
+    end
   end
 
   # Leaf classes for provisioning_manager

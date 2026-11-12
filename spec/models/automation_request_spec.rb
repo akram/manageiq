@@ -1,7 +1,6 @@
 RSpec.describe AutomationRequest do
   let(:admin) { FactoryBot.create(:user, :role => "admin") }
   before do
-    MiqRegion.seed
     allow(MiqServer).to receive(:my_zone).and_return(Zone.seed.name)
     @zone        = FactoryBot.create(:zone, :name => "fred")
     @approver    = FactoryBot.create(:user_miq_request_approver)
@@ -133,7 +132,7 @@ RSpec.describe AutomationRequest do
         "request_state"  => "pending",
         "status"         => "Ok",
         "approval_state" => "approved",
-        "userid"         => admin.userid.to_s,
+        "userid"         => admin.userid.to_s
       )
       expect(ar.options).to include(
         :namespace  => "SYSTEM",

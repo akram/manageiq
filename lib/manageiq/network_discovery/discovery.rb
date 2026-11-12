@@ -5,10 +5,8 @@ module ManageIQ
     module Discovery
       PROVIDERS_BY_TYPE = {
         :ipmi            => "ManageIQ::Util::IPMI::Discovery",
-        :msvirtualserver => "ManageIQ::Providers::Microsoft::Discovery",
-        :mswin           => "ManageIQ::Providers::Microsoft::Discovery",
-        :scvmm           => "ManageIQ::Providers::Microsoft::Discovery",
         :openstack_infra => "ManageIQ::Providers::Openstack::Discovery",
+        :ovirt           => "ManageIQ::Providers::Ovirt::Discovery",
         :rhevm           => "ManageIQ::Providers::Redhat::Discovery",
         :esx             => "ManageIQ::Providers::Vmware::Discovery",
         :virtualcenter   => "ManageIQ::Providers::Vmware::Discovery",
@@ -30,9 +28,11 @@ module ManageIQ
 
         if ping
           raise ArgumentError, "must pass discover_types" if ost.discover_types.blank?
+
           # Trigger probes
           ost.discover_types.each do |type|
             next unless PROVIDERS_BY_TYPE.include?(type)
+
             klass = Object.const_get(PROVIDERS_BY_TYPE[type])
             $log&.info("#{klass}: probing ip = #{ost.ipaddr}")
             klass.probe(ost)

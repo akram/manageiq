@@ -1,7 +1,7 @@
 class MiqRequestTask < ApplicationRecord
-  include_concern 'Dumping'
-  include_concern 'PostInstallCallback'
-  include_concern 'StateMachine'
+  include Dumping
+  include PostInstallCallback
+  include StateMachine
 
   belongs_to :miq_request
   belongs_to :source,            :polymorphic => true
@@ -10,8 +10,8 @@ class MiqRequestTask < ApplicationRecord
   belongs_to :miq_request_task
   belongs_to :tenant
 
-  serialize   :phase_context, Hash
-  serialize   :options,       Hash
+  serialize   :phase_context, :type => Hash
+  serialize   :options,       :type => Hash
 
   default_value_for :phase_context, {}
   default_value_for :options,       {}
@@ -20,7 +20,7 @@ class MiqRequestTask < ApplicationRecord
 
   delegate :request_class, :task_description, :to => :class
 
-  validates_inclusion_of :status, :in => %w( Ok Warn Error Timeout )
+  validates_inclusion_of :status, :in => %w[Ok Warn Error Timeout]
 
   include MiqRequestMixin
   include TenancyMixin
@@ -30,9 +30,9 @@ class MiqRequestTask < ApplicationRecord
   CANCEL_STATUS_FINISHED   = "canceled".freeze
   CANCEL_STATUS            = [CANCEL_STATUS_REQUESTED, CANCEL_STATUS_PROCESSING, CANCEL_STATUS_FINISHED].freeze
 
-  validates :cancelation_status, :inclusion => { :in        => CANCEL_STATUS,
+  validates :cancelation_status, :inclusion => {:in        => CANCEL_STATUS,
                                                  :allow_nil => true,
-                                                 :message   => "should be one of #{CANCEL_STATUS.join(", ")}" }
+                                                 :message   => "should be one of #{CANCEL_STATUS.join(", ")}"}
 
   def approved?
     if miq_request.class.name.include?('Template') && miq_request_task
@@ -124,6 +124,7 @@ class MiqRequestTask < ApplicationRecord
     if request_class::ACTIVE_STATES.include?(state)
       raise _("%{task} request is already being processed") % {:task => request_class::TASK_DESCRIPTION}
     end
+
     task_check_on_execute
   end
 
@@ -134,35 +135,54 @@ class MiqRequestTask < ApplicationRecord
     raise _("approval is required for %{task}") % {:task => request_class::TASK_DESCRIPTION} unless approved?
   end
 
-  def deliver_to_automate(req_type = request_type, zone = nil)
+  def deliver_queue(req_type = request_type, zone = nil)
     task_check_on_delivery
 
     _log.info("Queuing #{request_class::TASK_DESCRIPTION}: [#{description}]...")
 
-    if self.class::AUTOMATE_DRIVES
-      args = {
-        :object_type   => self.class.name,
-        :object_id     => id,
-        :attrs         => {"request" => req_type},
-        :instance_name => "AUTOMATION",
-        :user_id       => get_user.id,
-        :miq_group_id  => get_user.current_group.id,
-        :tenant_id     => get_user.current_tenant.id,
-      }
+    if options[:configuration_script_payload_id]
+      configuration_script_payload = ConfigurationScriptPayload.find(options[:configuration_script_payload_id])
 
-      zone ||= source.respond_to?(:my_zone) ? source.my_zone : MiqServer.my_zone
-      MiqQueue.put(
-        :class_name     => 'MiqAeEngine',
-        :method_name    => 'deliver',
-        :args           => [args],
-        :role           => 'automate',
-        :zone           => options.fetch(:miq_zone, zone),
-        :tracking_label => tracking_label_id,
+      miq_task_id = configuration_script_payload.run(
+        :inputs            => configuration_script_inputs,
+        :execution_context => configuration_script_context,
+        :userid            => get_user.userid,
+        :zone              => zone,
+        :object            => self
       )
-      update_and_notify_parent(:state => "pending", :status => "Ok",  :message => "Automation Starting")
+
+      options[:miq_task_id]                     = miq_task_id
+      options[:configuration_script_payload_id] = configuration_script_payload.id
+      options[:configuration_script_id]         = MiqTask.find(miq_task_id).context_data[:workflow_instance_id]
+      save!
+    elsif self.class::AUTOMATE_DRIVES
+      deliver_to_automate(req_type, zone)
     else
       execute_queue
     end
+  end
+
+  def deliver_to_automate(req_type = request_type, zone = nil)
+    args = {
+      :object_type   => self.class.name,
+      :object_id     => id,
+      :attrs         => {"request" => req_type},
+      :instance_name => "AUTOMATION",
+      :user_id       => get_user.id,
+      :miq_group_id  => get_user.current_group.id,
+      :tenant_id     => get_user.current_tenant.id,
+    }
+
+    zone ||= source.respond_to?(:my_zone) ? source.my_zone : MiqServer.my_zone
+    MiqQueue.put(
+      :class_name     => 'MiqAeEngine',
+      :method_name    => 'deliver',
+      :args           => [args],
+      :role           => 'automate',
+      :zone           => options.fetch(:miq_zone, zone),
+      :tracking_label => tracking_label_id
+    )
+    update_and_notify_parent(:state => "pending", :status => "Ok", :message => "Automation Starting")
   end
 
   def execute_queue(queue_options = {})
@@ -204,14 +224,18 @@ class MiqRequestTask < ApplicationRecord
 
       # Process the request
       do_request
-
     rescue => err
       message = "Error: #{err.message}"
       _log.error("[#{message}] encountered during #{request_class::TASK_DESCRIPTION}")
       _log.log_backtrace(err)
       update_and_notify_parent(:state => "finished", :status => "Error", :message => message)
-      return
+      nil
     end
+  end
+
+  def resource_action
+    # Override in child class if the source has resource_actions
+    nil
   end
 
   def self.display_name(number = 1)
@@ -245,6 +269,18 @@ class MiqRequestTask < ApplicationRecord
   end
 
   def valid_states
-    %w(pending finished) + request_class::ACTIVE_STATES
+    %w[pending finished] + request_class::ACTIVE_STATES
+  end
+
+  def configuration_script_inputs
+    {:dialog => dialog_values}
+  end
+
+  def configuration_script_context
+    {}
+  end
+
+  def dialog_values
+    options[:dialog] || {}
   end
 end

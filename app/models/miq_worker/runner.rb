@@ -20,12 +20,14 @@ class MiqWorker::Runner
 
   def poll_method
     return @poll_method unless @poll_method.nil?
+
     self.poll_method = worker_settings[:poll_method]&.to_sym
   end
 
   def poll_method=(val)
     val = "sleep_poll_#{val}"
     raise ArgumentError, _("poll method '%{value}' not defined") % {:value => val} unless respond_to?(val)
+
     @poll_method = val.to_sym
   end
 
@@ -76,6 +78,7 @@ class MiqWorker::Runner
   def worker_monitor_drb
     @worker_monitor_drb ||= begin
       raise _("%{log} No MiqServer found to establishing DRb Connection to") % {:log => log_prefix} if server.nil?
+
       drb_uri = server.reload.drb_uri
       if drb_uri.blank?
         raise _("%{log} Blank DRb_URI for MiqServer with ID=[%{number}], NAME=[%{name}], PID=[%{pid_number}], GUID=[%{guid_number}]") %
@@ -92,8 +95,36 @@ class MiqWorker::Runner
   end
 
   def start
+    self.class.module_parent.rails_worker? ? start_rails_worker : start_non_rails_worker
+  end
+
+  def start_rails_worker
     prepare
     run
+  end
+
+  def start_non_rails_worker
+    # Create a temp file and immediately unlink it to create a
+    # secure hidden file to be used for the child process' stdin.
+    #
+    # Typically this is done using a pipe but because we are exec'ing
+    # the child worker not forking it we aren't able to have the child
+    # worker read from one side of the pipe while the parent is writing
+    # to the other side.  This means that the amount of data that can be
+    # written is limited to the buffer size of the pipe and if you write
+    # more than that it will hang.
+    stdin_tmp = Tempfile.new
+    File.unlink(stdin_tmp.path)
+
+    stdin_tmp.write(worker_options.to_json)
+    stdin_tmp.rewind
+
+    $stdin.reopen(stdin_tmp)
+
+    # Using exec here rather than fork+exec so that we can continue to use the
+    # standard systemd service Type=notify and not have to use Type=forking which
+    # can limit other systemd options available to the service.
+    Bundler.unbundled_exec(worker_env, worker_cmdline)
   end
 
   def recover_from_temporary_failure
@@ -200,6 +231,7 @@ class MiqWorker::Runner
 
   def do_exit(message = nil, exit_code = 0)
     return if @exiting # Prevent running the do_exit logic more than one time
+
     @exiting = true
 
     begin
@@ -234,7 +266,6 @@ class MiqWorker::Runner
     Vmdb::Settings.reload!
     @my_zone ||= MiqServer.my_zone
     sync_worker_settings
-    sync_blacklisted_events
     after_sync_config
 
     _log.info("ID [#{@worker.id}], PID [#{Process.pid}], GUID [#{@worker.guid}], Zone [#{@my_zone}], Active Roles [#{@active_roles.join(',')}], Assigned Roles [#{MiqServer.my_role}], Configuration:")
@@ -266,7 +297,7 @@ class MiqWorker::Runner
         heartbeat
         do_work
       rescue TemporaryFailure => error
-        msg = "#{log_prefix} Temporary failure (message: '#{error}') caught"\
+        msg = "#{log_prefix} Temporary failure (message: '#{error}') caught" \
             " during #do_work. Sleeping for a while before resuming."
         _log.warn(msg)
         recover_from_temporary_failure
@@ -370,9 +401,6 @@ class MiqWorker::Runner
   def before_exit(_message, _exit_code)
   end
 
-  def sync_blacklisted_events
-  end
-
   #
   # Polling methods
   #
@@ -401,8 +429,10 @@ class MiqWorker::Runner
 
   def self.ruby_object_usage
     types = Hash.new { |h, k| h[k] = 0 }
-    ObjectSpace.each_object do |obj|
-      types[obj.class.name] += 1
+    ObjectSpace.each_object(Object) do |obj|
+      next unless defined?(obj.class)
+
+      types[obj.class.to_s] += 1
     end
     types
   end
@@ -435,7 +465,7 @@ class MiqWorker::Runner
 
   def process_message(message, *args)
     meth = "message_#{message}"
-    if self.respond_to?(meth)
+    if respond_to?(meth)
       send(meth, *args)
     else
       _log.warn("#{log_prefix} Message [#{message}] is not recognized, ignoring")
@@ -455,6 +485,39 @@ class MiqWorker::Runner
   end
 
   private
+
+  def worker_options
+    settings = {
+      :worker_settings => worker_settings
+    }
+
+    worker.class.worker_settings_paths.to_a.each do |settings_path|
+      settings.store_path(settings_path, Settings.to_hash.dig(*settings_path))
+    end
+
+    {
+      :messaging => MiqQueue.messaging_client_options,
+      :settings  => worker.class.normalize_settings!(settings, :recurse => true)
+    }
+  end
+
+  def worker_env
+    {
+      "APP_ROOT"              => Rails.root.to_s,
+      "BUNDLE_GEMFILE"        => Rails.root.join("Gemfile").to_s,
+      "GUID"                  => @worker.guid,
+      "WORKER_HEARTBEAT_FILE" => @worker.heartbeat_file
+    }
+  end
+
+  def worker_cmdline
+    # Attempt to find the plugin where the class lives then default to
+    # the application root
+    engine = Vmdb::Plugins.plugin_for_class(self.class) || Rails
+
+    worker_type = self.class.module_parent.name.split("::").last.underscore
+    engine.root.join("workers/#{worker_type}/worker").to_s
+  end
 
   def skip_heartbeat?
     ENV["DISABLE_MIQ_WORKER_HEARTBEAT"]

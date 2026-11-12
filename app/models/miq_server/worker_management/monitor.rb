@@ -1,15 +1,15 @@
 module MiqServer::WorkerManagement::Monitor
   extend ActiveSupport::Concern
 
-  include_concern 'Kill'
-  include_concern 'Quiesce'
-  include_concern 'Reason'
-  include_concern 'Settings'
-  include_concern 'Start'
-  include_concern 'Status'
-  include_concern 'Stop'
-  include_concern 'SystemLimits'
-  include_concern 'Validation'
+  include Kill
+  include Quiesce
+  include Reason
+  include Settings
+  include Start
+  include Status
+  include Stop
+  include SystemLimits
+  include Validation
 
   def monitor_workers
     # Reload my_server so we can detect role and possibly other changes faster
@@ -36,14 +36,17 @@ module MiqServer::WorkerManagement::Monitor
   end
 
   def sync_workers
-    MiqWorkerType.worker_classes.each_with_object({}) do |klass, result|
-      result[klass.name] = klass.sync_workers
-      result[klass.name][:adds].each { |pid| worker_add(pid) unless pid.nil? }
+    MiqWorkerType.worker_classes.each do |klass|
+      synced_workers = klass.sync_workers
+      synced_workers[:adds].each { |pid| worker_add(pid) unless pid.nil? }
     rescue => error
       _log.error("Failed to sync_workers for class: #{klass.name}: #{error}")
       _log.log_backtrace(error)
       next
     end
+
+    sync_starting_workers
+    sync_stopping_workers
   end
 
   def cleanup_failed_workers
@@ -52,22 +55,16 @@ module MiqServer::WorkerManagement::Monitor
   end
 
   def clean_worker_records
-    worker_deleted = false
-    miq_workers.each do |w|
-      next unless w.is_stopped?
+    remove_workers(miq_workers.to_a.select(&:is_stopped?)) do |w|
       _log.info("SQL Record for #{w.format_full_log_msg}, Status: [#{w.status}] is being deleted")
-      worker_delete(w.pid)
-      w.destroy
-      worker_deleted = true
     end
-
-    miq_workers.reload if worker_deleted
   end
 
   def check_pending_stop
     miq_workers.each do |w|
       next unless w.is_stopped?
       next unless worker_get_monitor_status(w.pid) == :waiting_for_stop
+
       worker_set_monitor_status(w.pid, nil)
     end
   end
@@ -100,25 +97,11 @@ module MiqServer::WorkerManagement::Monitor
   end
 
   def sync_monitor
-    @last_sync ||= Time.now.utc
+    @last_sync          ||= Time.now.utc
     sync_interval         = @worker_monitor_settings[:sync_interval] || 30.minutes
     sync_interval_reached = sync_interval.seconds.ago.utc > @last_sync
-    roles_changed         = my_server.active_roles_changed?
-    resync_needed         = roles_changed || sync_interval_reached
 
-    roles_added, roles_deleted, _roles_unchanged = my_server.role_changes
-
-    if resync_needed
-      if roles_changed
-        my_server.log_role_changes
-        my_server.sync_active_roles
-        my_server.set_active_role_flags
-      end
-
-      EvmDatabase.restart_failover_monitor_service if (roles_added | roles_deleted).include?("database_operations")
-
-      reset_queue_messages if roles_changed
-
+    if sync_interval_reached
       @last_sync = Time.now.utc
       notify_workers_of_config_change(@last_sync)
     end

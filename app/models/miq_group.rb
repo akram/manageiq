@@ -16,13 +16,13 @@ class MiqGroup < ApplicationRecord
   has_many   :miq_product_features, :through => :miq_user_role
   has_many   :authentications, :dependent => :nullify
 
-  virtual_delegate :miq_user_role_name, :to => :entitlement, :allow_nil => true, :type => :string
+  virtual_attribute :miq_user_role_name, :string, :through => :entitlement, :source => :miq_user_role_name
   virtual_column :read_only,          :type => :boolean
   virtual_has_one :sui_product_features, :class_name => "Array"
 
   delegate :self_service?, :limited_self_service?, :to => :miq_user_role, :allow_nil => true
 
-  validates :description, :presence => true, :unique_within_region => { :match_case => false }
+  validates :description, :presence => true, :unique_within_region => {:match_case => false}
   validate :validate_default_tenant, :on => :update, :if => :tenant_id_changed?
   before_destroy :ensure_can_be_destroyed
   after_destroy :reset_current_group_for_users
@@ -62,10 +62,16 @@ class MiqGroup < ApplicationRecord
     super(indifferent_settings)
   end
 
-  def self.with_roles_excluding(identifier)
-    where.not(:id => MiqGroup.unscope(:select).joins(:miq_product_features)
-                             .where(:miq_product_features => {:identifier => identifier})
-                             .select(:id))
+  def self.with_roles_excluding(identifier, allowed_ids: nil)
+    scope = where.not(
+      :id => MiqGroup
+        .unscope(:select)
+        .joins(:miq_product_features)
+        .where(:miq_product_features => {:identifier => identifier})
+        .select(:id)
+    )
+    scope = scope.or(where(:id => allowed_ids)) if allowed_ids.present?
+    scope
   end
 
   def self.next_sequence
@@ -148,19 +154,6 @@ class MiqGroup < ApplicationRecord
 
   def self.strip_group_domains(group_list)
     group_list.collect { |group| group.gsub(/@.*/, '') }
-  end
-
-  def self.get_ldap_groups_by_user(user, bind_dn, bind_pwd)
-    username = user.kind_of?(self) ? user.userid : user
-    ldap = MiqLdap.new
-
-    unless ldap.bind(ldap.fqusername(bind_dn), bind_pwd)
-      raise _("Bind failed for user %{user_name}") % {:user_name => bind_dn}
-    end
-    user_obj = ldap.get_user_object(ldap.normalize(ldap.fqusername(username)))
-    raise _("Unable to find user %{user_name} in directory") % {:user_name => username} if user_obj.nil?
-
-    ldap.get_memberships(user_obj, ::Settings.authentication.group_memberships_max_depth)
   end
 
   def self.get_httpd_groups_by_user(user)
@@ -255,7 +248,7 @@ class MiqGroup < ApplicationRecord
   end
 
   def self.regional_groups(group)
-    where(arel_table.grouping(Arel::Nodes::NamedFunction.new("LOWER", [arel_attribute(:description)]).eq(group.description.downcase)))
+    where(arel_table.grouping(arel_table.lower(arel_table[:description]).eq(group.description.downcase)))
   end
 
   def self.create_tenant_group(tenant)
@@ -265,7 +258,7 @@ class MiqGroup < ApplicationRecord
       :description => "Tenant #{tenant_full_name} access"
     ).find_or_create_by!(
       :group_type => TENANT_GROUP,
-      :tenant_id  => tenant.id,
+      :tenant_id  => tenant.id
     )
   end
 
@@ -293,11 +286,13 @@ class MiqGroup < ApplicationRecord
   def single_group_users?
     group_user_ids = user_ids
     return false if group_user_ids.empty?
+
     users.includes(:miq_groups).where(:id => group_user_ids).where.not(:miq_groups => {:id => id}).count != group_user_ids.size
   end
 
   def sui_product_features
     return [] unless miq_user_role.allows?(:identifier => 'sui')
+
     MiqProductFeature.feature_all_children('sui').each_with_object([]) do |sui_feature, sui_features|
       sui_features << sui_feature if miq_user_role.allows?(:identifier => sui_feature)
     end

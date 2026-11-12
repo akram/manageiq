@@ -1,15 +1,15 @@
 class MiqReport < ApplicationRecord
   include ActiveRecord::AttributeAccessorThatYamls
 
-  include_concern 'Formatting'
-  include_concern 'Formatters'
-  include_concern 'Seeding'
-  include_concern 'ImportExport'
-  include_concern 'Generator'
-  include_concern 'Notification'
-  include_concern 'Schedule'
-  include_concern 'Search'
-  include YAMLImportExportMixin
+  include Formatting
+  include Formatters
+  include Seeding
+  include ImportExport
+  include Generator
+  include Notification
+  include Schedule
+  include Search
+  include YamlImportExportMixin
 
   serialize :cols
   serialize :conditions
@@ -32,7 +32,7 @@ class MiqReport < ApplicationRecord
 
   validates_presence_of     :name, :title, :db, :rpt_group
   validates :name, :uniqueness_when_changed => true
-  validates_inclusion_of    :rpt_type, :in => %w( Default Custom )
+  validates_inclusion_of    :rpt_type, :in => %w[Default Custom]
 
   has_many                  :miq_report_results, :dependent => :destroy
   belongs_to                :time_profile
@@ -46,6 +46,7 @@ class MiqReport < ApplicationRecord
 
   alias_attribute :menu_name, :name
   attr_accessor :ext_options
+
   attr_accessor_that_yamls :table, :sub_table, :filter_summary, :extras, :ids, :scoped_association, :html_title, :file_name,
                            :extras, :record_id, :tl_times, :user_categories, :trend_data, :performance, :include_for_find,
                            :report_run_time, :chart
@@ -54,7 +55,7 @@ class MiqReport < ApplicationRecord
 
   GROUPINGS = [[:min, N_("Minimum"), N_("Minima")], [:avg, N_("Average"), N_("Averages")], [:max, N_("Maximum"), N_("Maxima")], [:total, N_("Total"), N_("Totals")]].freeze
   PIVOTS    = [[:min, "Minimum"], [:avg, "Average"], [:max, "Maximum"], [:total, "Total"]]
-  IMPORT_CLASS_NAMES = %w(MiqReport).freeze
+  IMPORT_CLASS_NAMES = %w[MiqReport].freeze
 
   scope :for_user, lambda { |user|
     if user.report_admin_user?
@@ -91,7 +92,7 @@ class MiqReport < ApplicationRecord
       else
         column = Chargeback.default_column_for_format(column.to_s) if Chargeback.db_is_chargeback?(db)
         expression_col = col_to_expression_col(column)
-        column_type = MiqExpression.parse_field_or_tag(expression_col).try(:column_type)&.to_sym
+        column_type = MiqExpression::Target.parse(expression_col).column_type
         MiqReport::Formats.default_format_for_path(expression_col, column_type)
       end
     end
@@ -99,7 +100,7 @@ class MiqReport < ApplicationRecord
 
   def conditions=(exp)
     exp = MiqExpression.new(exp) if exp && !exp.kind_of?(MiqExpression)
-    super
+    write_attribute("conditions", exp)
   end
 
   # NOTE: this can by dynamically manipulated
@@ -137,7 +138,7 @@ class MiqReport < ApplicationRecord
   end
 
   def self.get_col_info(path)
-    data_type = MiqExpression.parse_field_or_tag(path).try(:column_type)
+    data_type = MiqExpression::Target.parse(path).column_type
     {
       :data_type         => data_type,
       :available_formats => get_available_formats(path, data_type),
@@ -166,7 +167,7 @@ class MiqReport < ApplicationRecord
   end
 
   def db_class
-    db.kind_of?(Class) ? db : Object.const_get(db)
+    @db_class ||= db.kind_of?(Class) ? db : Object.const_get(db)
   end
 
   def contains_records?
@@ -226,9 +227,9 @@ class MiqReport < ApplicationRecord
   end
 
   def load_custom_attributes
-    return unless db_klass < CustomAttributeMixin || Chargeback.db_is_chargeback?(db)
+    return unless db_class < CustomAttributeMixin || Chargeback.db_is_chargeback?(db)
 
-    db_klass.load_custom_attributes_for(cols.uniq)
+    db_class.load_custom_attributes_for(cols.uniq)
   end
 
   # this method adds :custom_attributes => {} to MiqReport#include
@@ -300,7 +301,7 @@ class MiqReport < ApplicationRecord
     tz = get_time_zone(User.current_user.settings.fetch_path(:display, :timezone).presence || Time.zone)
     row.map do |key, _|
       value = allowed_columns.nil? || allowed_columns&.include?(key) ? format_column(key, row, tz, col_format_hash[key]) : row[key]
-      [key, expand_value_format.present? ? { :value => value, :style_class => get_style_class(key, row, tz) } : value]
+      [key, expand_value_format.present? ? {:value => value, :style_class => get_style_class(key, row, tz)} : value]
     end.to_h
   end
 
@@ -330,9 +331,5 @@ class MiqReport < ApplicationRecord
     @va_sql_cols ||= cols.select do |col|
       db_class.virtual_attribute?(col) && db_class.attribute_supported_by_sql?(col)
     end
-  end
-
-  def db_klass
-    @db_klass ||= db.kind_of?(Class) ? db : Object.const_get(db)
   end
 end

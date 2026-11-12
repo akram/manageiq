@@ -67,41 +67,44 @@ RSpec.describe ContainerOrchestrator do
     end
 
     context "when MESSAGING_TYPE is set" do
-      before { stub_const("ENV", ENV.to_h.merge("MESSAGING_TYPE" => "kafka", "MESSAGING_PORT" => "9092")) }
+      before do
+        stub_const("ENV", ENV.to_h.merge(
+                            "MESSAGING_TYPE"           => "kafka",
+                            "MESSAGING_PORT"           => "9092",
+                            "MESSAGING_SSL_CA"         => "/etc/pki/ca-trust/source/anchors/root.crt",
+                            "MESSAGING_SASL_MECHANISM" => "PLAIN",
+                            "MESSAGING_HOSTNAME"       => "hostname",
+                            "MESSAGING_PASSWORD"       => "password",
+                            "MESSAGING_USERNAME"       => "username"
+                          ))
+      end
 
       it "sets the messaging env vars" do
         expect(subject.send(:default_environment)).to include(
           {:name => "MESSAGING_PORT", :value => "9092"},
           {:name => "MESSAGING_TYPE", :value => "kafka"},
-          {:name      => "MESSAGING_HOSTNAME",
-           :valueFrom => {:secretKeyRef=>{:name => "kafka-secrets", :key => "hostname"}}},
-          {:name      => "MESSAGING_PASSWORD",
-           :valueFrom => {:secretKeyRef=>{:name => "kafka-secrets", :key => "password"}}},
-          {:name      => "MESSAGING_USERNAME",
-           :valueFrom => {:secretKeyRef=>{:name => "kafka-secrets", :key => "username"}}}
+          {:name => "MESSAGING_SSL_CA", :value => "/etc/pki/ca-trust/source/anchors/root.crt"},
+          {:name => "MESSAGING_SASL_MECHANISM", :value => "PLAIN"},
+          {:name => "MESSAGING_HOSTNAME", :value => "hostname"},
+          {:name => "MESSAGING_PASSWORD", :value => "password"},
+          {:name => "MESSAGING_USERNAME", :value => "username"}
         )
       end
     end
 
     it "sets database environment variables" do
       stub_const("ENV", ENV.to_h.merge(
-        "DATABASE_HOSTNAME" => "postgres",
         "DATABASE_NAME"     => "vmdb_production",
-        "DATABASE_PASSWORD" => "password",
-        "DATABASE_PORT"     => "5432",
-        "DATABASE_REGION"   => "0",
-        "DATABASE_SSL_MODE" => "verify-full",
-        "DATABASE_USER"     => "postgres",
+        "DATABASE_SSL_MODE" => "verify-full"
       ))
 
-      expect(subject.send(:default_environment)).to include(
-        {:name => "DATABASE_PORT",     :value => "5432"},
-        {:name => "DATABASE_SSL_MODE", :value => "verify-full"},
-        {:name => "DATABASE_HOSTNAME", :valueFrom => {:secretKeyRef => {:key => "hostname", :name => "postgresql-secrets"}}},
-        {:name => "DATABASE_NAME",     :valueFrom => {:secretKeyRef => {:key => "dbname",   :name => "postgresql-secrets"}}},
-        {:name => "DATABASE_PASSWORD", :valueFrom => {:secretKeyRef => {:key => "password", :name => "postgresql-secrets"}}},
-        {:name => "DATABASE_USER",     :valueFrom => {:secretKeyRef => {:key => "username", :name => "postgresql-secrets"}}},
-      )
+      expect(subject.send(:default_environment)).to include({:name => "DATABASE_SSL_MODE", :value => "verify-full"})
+      expect(subject.send(:default_environment)).not_to include({:name => "DATABASE_NAME", :valueFrom => {:secretKeyRef => {:key => "dbname", :name => "postgresql-secrets"}}})
+    end
+
+    it "sets APPLICATION_DOMAIN" do
+      stub_const("ENV", ENV.to_h.merge("APPLICATION_DOMAIN" => "manageiq"))
+      expect(subject.send(:default_environment)).to include({:name => "APPLICATION_DOMAIN", :value => "manageiq"})
     end
 
     it "doesn't include memcached env vars by default" do
@@ -117,21 +120,27 @@ RSpec.describe ContainerOrchestrator do
       it "sets the messaging env vars" do
         expect(subject.send(:default_environment)).to include(
           {:name => "MEMCACHED_ENABLE_SSL", :value => "true"},
-          {:name => "MEMCACHED_SSL_CA",     :value => "/etc/pki/ca-trust/source/anchors/root.crt"},
+          {:name => "MEMCACHED_SSL_CA",     :value => "/etc/pki/ca-trust/source/anchors/root.crt"}
         )
       end
     end
   end
 
   context "#deployment_definition (private)" do
+    let(:container_orchestrator) { ContainerOrchestrator.new }
+    before do
+      allow(ContainerOrchestrator).to receive(:new).and_return(container_orchestrator)
+      expect(container_orchestrator).to receive(:my_node_affinity_arch_values).and_return(["amd64", "arm64"])
+    end
+
     it "skips the database root certificate if the orchestrator doesn't have it" do
       expect(File).to receive(:file?).with("/.postgresql/root.crt").and_return(false)
       allow(File).to receive(:file?).and_call_original # allow other calls to .file? to still work
 
       deployment_definition = subject.send(:deployment_definition, "test")
 
-      expect(deployment_definition.fetch_path(:spec, :template, :spec, :containers, 0, :volumeMounts, 0)).to be_nil
-      expect(deployment_definition.fetch_path(:spec, :template, :spec, :volumes, 0)).to be_nil
+      expect(deployment_definition.fetch_path(:spec, :template, :spec, :containers, 0, :volumeMounts).length).to eq(3)
+      expect(deployment_definition.fetch_path(:spec, :template, :spec, :volumes).length).to eq(3)
     end
 
     it "mounts the database root certificate" do
@@ -140,12 +149,12 @@ RSpec.describe ContainerOrchestrator do
 
       deployment_definition = subject.send(:deployment_definition, "test")
 
-      expect(deployment_definition.fetch_path(:spec, :template, :spec, :containers, 0, :volumeMounts, 0)).to eq(
+      expect(deployment_definition.fetch_path(:spec, :template, :spec, :containers, 0, :volumeMounts)).to include({
         :mountPath => "/.postgresql",
         :name      => "pg-root-certificate",
         :readOnly  => true
-      )
-      expect(deployment_definition.fetch_path(:spec, :template, :spec, :volumes, 0)).to eq(
+      })
+      expect(deployment_definition.fetch_path(:spec, :template, :spec, :volumes)).to include({
         :name   => "pg-root-certificate",
         :secret => {
           :secretName => "postgresql-secrets",
@@ -154,7 +163,7 @@ RSpec.describe ContainerOrchestrator do
             :path => "root.crt",
           ],
         }
-      )
+      })
     end
 
     it "mounts the root CA certificate" do
@@ -162,12 +171,12 @@ RSpec.describe ContainerOrchestrator do
 
       deployment_definition = subject.send(:deployment_definition, "test")
 
-      expect(deployment_definition.fetch_path(:spec, :template, :spec, :containers, 0, :volumeMounts, 0)).to eq(
+      expect(deployment_definition.fetch_path(:spec, :template, :spec, :containers, 0, :volumeMounts)).to include({
         :mountPath => "/etc/pki/ca-trust/source/anchors",
         :name      => "internal-root-certificate",
         :readOnly  => true
-      )
-      expect(deployment_definition.fetch_path(:spec, :template, :spec, :volumes, 0)).to eq(
+      })
+      expect(deployment_definition.fetch_path(:spec, :template, :spec, :volumes)).to include({
         :name   => "internal-root-certificate",
         :secret => {
           :secretName => "some-secret-name",
@@ -176,7 +185,17 @@ RSpec.describe ContainerOrchestrator do
             :path => "root.crt",
           ],
         }
-      )
+      })
+    end
+
+    it "includes node affinities" do
+      deployment_definition = subject.send(:deployment_definition, "test")
+
+      expect(deployment_definition.fetch_path(:spec, :template, :spec, :affinity, :nodeAffinity, :requiredDuringSchedulingIgnoredDuringExecution, :nodeSelectorTerms, 0, :matchExpressions, 0)).to include({
+        :key => "kubernetes.io/arch",
+        :operator => "In",
+        :values => ["amd64", "arm64"],
+      })
     end
   end
 
@@ -199,6 +218,12 @@ RSpec.describe ContainerOrchestrator do
     end
 
     describe "#create_deployment" do
+      let(:container_orchestrator) { ContainerOrchestrator.new }
+      before do
+        allow(ContainerOrchestrator).to receive(:new).and_return(container_orchestrator)
+        expect(container_orchestrator).to receive(:my_node_affinity_arch_values).and_return(["amd64", "arm64"])
+      end
+
       it "creates a deployment with the given name and edits" do
         expect(apps_connection_stub).to receive(:create_deployment) do |definition|
           expect(definition[:metadata][:name]).to eq("test")
@@ -217,7 +242,7 @@ RSpec.describe ContainerOrchestrator do
       end
 
       it "doesn't raise an exception for an existing object" do
-        error = KubeException.new(500, "deployment config already exists", "")
+        error = Kubeclient::HttpError.new(500, "deployment config already exists", "")
         expect(apps_connection_stub).to receive(:create_deployment).and_raise(error)
 
         expect { subject.create_deployment("test") }.not_to raise_error
@@ -243,7 +268,7 @@ RSpec.describe ContainerOrchestrator do
       end
 
       it "doesn't raise an exception for an existing object" do
-        error = KubeException.new(500, "service already exists", "")
+        error = Kubeclient::HttpError.new(500, "service already exists", "")
         expect(kube_connection_stub).to receive(:create_service).and_raise(error)
 
         expect { subject.create_service("http", {:service => "http"}, 80) }.not_to raise_error
@@ -268,7 +293,7 @@ RSpec.describe ContainerOrchestrator do
       end
 
       it "doesn't raise an exception for an existing object" do
-        error = KubeException.new(500, "secret mysecret already exists", "")
+        error = Kubeclient::HttpError.new(500, "secret mysecret already exists", "")
         expect(kube_connection_stub).to receive(:create_secret).and_raise(error)
 
         expect { subject.create_secret("mysecret", {}) }.not_to raise_error

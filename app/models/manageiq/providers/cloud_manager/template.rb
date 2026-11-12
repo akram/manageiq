@@ -1,6 +1,4 @@
-class ManageIQ::Providers::CloudManager::Template < ::MiqTemplate
-  supports_not :import_image
-
+class ManageIQ::Providers::CloudManager::Template < MiqTemplate
   default_value_for :cloud, true
 
   virtual_column :image?, :type => :boolean
@@ -29,7 +27,7 @@ class ManageIQ::Providers::CloudManager::Template < ::MiqTemplate
     }
 
     queue_opts = {
-      :class_name  => self.name,
+      :class_name  => name,
       :method_name => 'create_image',
       :role        => 'ems_operations',
       :zone        => ext_management_system.my_zone,
@@ -44,12 +42,9 @@ class ManageIQ::Providers::CloudManager::Template < ::MiqTemplate
     raise NotImplementedError, "raw_create_image must be implemented in a subclass"
   end
 
-  def validate_create_image(_ext_management_system, _options = {})
-    validate_unsupported(_("Create Image Operation"))
-  end
-
   def self.create_image(ems_id, options)
     raise ArgumentError, _("ems cannot be nil") if ems_id.nil?
+
     ext_management_system = ExtManagementSystem.find(ems_id)
     raise ArgumentError, _("ems cannot be found") if ext_management_system.nil?
 
@@ -118,10 +113,6 @@ class ManageIQ::Providers::CloudManager::Template < ::MiqTemplate
     raw_update_image(options)
   end
 
-  def validate_update_image
-    validate_unsupported("Update Image Operation")
-  end
-
   def raw_update_image(_options = {})
     raise NotImplementedError, _("raw_update_image must be implemented in a subclass")
   end
@@ -152,17 +143,8 @@ class ManageIQ::Providers::CloudManager::Template < ::MiqTemplate
     raise NotImplementedError, _("raw_delete_image must be implemented in a subclass")
   end
 
-  def validate_delete_image
-    validate_unsupported(_("Delete Cloud Template Operation"))
-  end
-
   def delete_image
     raw_delete_image
-  end
-
-  def validate_unsupported(message_prefix)
-    {:available => false,
-     :message   => _("%{message} is not available for %{name}.") % {:message => message_prefix, :name => name}}
   end
 
   def self.display_name(number = 1)

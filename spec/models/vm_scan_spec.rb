@@ -1,6 +1,6 @@
 RSpec.describe VmScan do
   context "A single VM Scan Job," do
-    let(:server) { EvmSpecHelper.local_miq_server(:has_vix_disk_lib => true) }
+    let(:server) { EvmSpecHelper.local_miq_server(:capabilities => {"vix_disk_lib" => true}) }
     let(:user) { FactoryBot.create(:user_with_group, :userid => "tester") }
     let(:ems) { FactoryBot.create(:ems_infra, :zone => server.zone) }
     let(:vm) { FactoryBot.create(:vm_infra, :ext_management_system => ems, :host => host, :miq_group => user.current_group, :evm_owner => user) }
@@ -15,7 +15,7 @@ RSpec.describe VmScan do
         vm.scan
 
         job_item = MiqQueue.find_by(:class_name => "MiqAeEngine", :method_name => "deliver")
-        job_item.delivered(*job_item.deliver)
+        job_item.deliver_and_process
 
         # Allow the use of allow(job) and expect(job) instead of having to use
         # [allow/expect]_any_instance_of(VmScan) due to some signals being
@@ -40,13 +40,13 @@ RSpec.describe VmScan do
 
           # check_policy raises an miq_event, deliver the raise_evm_job_event
           job_item = MiqQueue.find_by(:class_name => "MiqAeEngine", :method_name => "deliver")
-          job_item.delivered(*job_item.deliver)
+          job_item.deliver_and_process
 
           expect(job).to receive(:before_scan)
 
           # Then deliver the signal from that event
           queue_item = MiqQueue.find_by(:class_name => job.class.name, :method_name => "signal")
-          queue_item.delivered(*queue_item.deliver)
+          queue_item.deliver_and_process
         end
       end
 
@@ -106,34 +106,34 @@ RSpec.describe VmScan do
   context "A VM Scan job in multiple zones" do
     before do
       # local zone
-      @server1 = EvmSpecHelper.local_miq_server(:has_vix_disk_lib => true)
-      @user      = FactoryBot.create(:user_with_group, :userid => "tester")
-      @ems       = FactoryBot.create(:ems_vmware_with_authentication, :name   => "Test EMS", :zone => @server1.zone,
-                                      :tenant                                  => FactoryBot.create(:tenant))
-      @storage   = FactoryBot.create(:storage, :name => "test_storage", :store_type => "VMFS")
-      @host      = FactoryBot.create(:host, :name => "test_host", :hostname => "test_host",
-                                      :state       => 'on', :ext_management_system => @ems)
-      @vm        = FactoryBot.create(:vm_vmware, :name => "test_vm", :location => "abc/abc.vmx",
-                                      :raw_power_state       => 'poweredOn',
-                                      :host                  => @host,
-                                      :ext_management_system => @ems,
-                                      :miq_group             => @user.current_group,
-                                      :evm_owner             => @user,
-                                      :storage               => @storage)
+      @server1 = EvmSpecHelper.local_miq_server(:capabilities => {"vix_disk_lib" => true})
+      @user    = FactoryBot.create(:user_with_group, :userid => "tester")
+      @ems     = FactoryBot.create(:ems_vmware_with_authentication, :name => "Test EMS", :zone => @server1.zone,
+                                   :tenant => FactoryBot.create(:tenant))
+      @storage = FactoryBot.create(:storage, :name => "test_storage", :store_type => "VMFS")
+      @host    = FactoryBot.create(:host, :name => "test_host", :hostname => "test_host",
+                                   :state => 'on', :ext_management_system => @ems)
+      @vm      = FactoryBot.create(:vm_vmware, :name => "test_vm", :location => "abc/abc.vmx",
+                                   :raw_power_state       => 'poweredOn',
+                                   :host                  => @host,
+                                   :ext_management_system => @ems,
+                                   :miq_group             => @user.current_group,
+                                   :evm_owner             => @user,
+                                   :storage               => @storage)
 
       # remote zone
-      @server2 = EvmSpecHelper.remote_miq_server(:has_vix_disk_lib => true)
-      @user2     = FactoryBot.create(:user_with_group, :userid => "tester2")
-      @storage2  = FactoryBot.create(:storage, :name => "test_storage2", :store_type => "VMFS")
-      @host2     = FactoryBot.create(:host, :name => "test_host2", :hostname => "test_host2",
-                                      :state       => 'on', :ext_management_system => @ems)
-      @vm2       = FactoryBot.create(:vm_vmware, :name => "test_vm2", :location => "abc2/abc2.vmx",
-                                      :raw_power_state       => 'poweredOn',
-                                      :host                  => @host2,
-                                      :ext_management_system => @ems,
-                                      :miq_group             => @user2.current_group,
-                                      :evm_owner             => @user2,
-                                      :storage               => @storage2)
+      @server2  = EvmSpecHelper.remote_miq_server(:capabilities => {"vix_disk_lib" => true})
+      @user2    = FactoryBot.create(:user_with_group, :userid => "tester2")
+      @storage2 = FactoryBot.create(:storage, :name => "test_storage2", :store_type => "VMFS")
+      @host2    = FactoryBot.create(:host, :name => "test_host2", :hostname => "test_host2",
+                                    :state => 'on', :ext_management_system => @ems)
+      @vm2      = FactoryBot.create(:vm_vmware, :name => "test_vm2", :location => "abc2/abc2.vmx",
+                                    :raw_power_state       => 'poweredOn',
+                                    :host                  => @host2,
+                                    :ext_management_system => @ems,
+                                    :miq_group             => @user2.current_group,
+                                    :evm_owner             => @user2,
+                                    :storage               => @storage2)
 
       allow(MiqEventDefinition).to receive_messages(:find_by => true)
       allow(@server1).to receive(:has_active_role?).with('automate').and_return(true) # set automate role in local zone
@@ -144,7 +144,7 @@ RSpec.describe VmScan do
         before do
           @vm.scan
           job_item = MiqQueue.find_by(:class_name => "MiqAeEngine", :method_name => "deliver")
-          job_item.delivered(*job_item.deliver)
+          job_item.deliver_and_process
 
           @job = Job.first
         end
@@ -177,7 +177,7 @@ RSpec.describe VmScan do
         before do
           @vm2.scan
           job_item = MiqQueue.find_by(:class_name => "MiqAeEngine", :method_name => "deliver")
-          job_item.delivered(*job_item.deliver)
+          job_item.deliver_and_process
 
           @job = Job.first
         end

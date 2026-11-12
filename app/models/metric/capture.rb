@@ -26,12 +26,6 @@ module Metric::Capture
     historical_days.days.ago.utc.beginning_of_day
   end
 
-  def self.concurrent_requests(interval_name)
-    requests = ::Settings.performance.concurrent_requests[interval_name]
-    requests = 20 if requests < 20 && interval_name == 'realtime'
-    requests
-  end
-
   def self.standard_capture_threshold(target)
     target_key = target.class.base_model.to_s.underscore.to_sym
     minutes_ago(::Settings.performance.capture_threshold[target_key] ||
@@ -48,6 +42,11 @@ module Metric::Capture
     _log.info("Queueing performance capture...")
 
     ems = ExtManagementSystem.find(ems_id)
+    if !ems.enabled?
+      _log.info("Queueing performance capture...Skipping because name: [#{ems.name}] id: [#{ems.id}] is paused")
+      return
+    end
+
     ems.perf_capture_object.perf_capture_all_queue
 
     _log.info("Queueing performance capture...Complete")

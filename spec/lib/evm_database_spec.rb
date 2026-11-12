@@ -43,11 +43,9 @@ RSpec.describe EvmDatabase do
       expect { described_class.seed(["VmOrTemplate"]) }.to raise_error(ArgumentError, /do not respond to seed/)
     end
 
-    # this spec takes about 30 seconds but is the only check that db:seed won't fail
-    it "doesn't fail" do
-      expect do
-        described_class.seed
-      end.not_to raise_error
+    # this spec takes about 20 seconds but is the only check that db:seed won't fail
+    it "doesn't fail", :providers_common => true do
+      described_class.seed
     end
   end
 
@@ -133,10 +131,10 @@ RSpec.describe EvmDatabase do
 
   describe ".raise_server_event" do
     it "adds to queue request to raise 'evm_event'" do
-      EvmSpecHelper.create_guid_miq_server_zone
+      EvmSpecHelper.local_miq_server
       described_class.raise_server_event("db_failover_executed")
       record = MiqQueue.last
-      expect(record.class_name). to eq "MiqEvent"
+      expect(record.class_name).to eq "MiqEvent"
       expect(record.method_name).to eq "raise_evm_event"
       expect(record.args[1]).to eq "db_failover_executed"
     end
@@ -177,7 +175,7 @@ RSpec.describe EvmDatabase do
   end
 
   describe ".run_failover_monitor" do
-    let!(:server) { EvmSpecHelper.local_guid_miq_server_zone[1] }
+    let!(:server) { EvmSpecHelper.local_miq_server }
     let(:monitor) { ManageIQ::PostgresHaAdmin::FailoverMonitor.new }
     let(:subscriptions) do
       [
@@ -213,9 +211,19 @@ RSpec.describe EvmDatabase do
       expect(handlers.count).to eq(3)
       handlers.select! { |h| h.kind_of?(ManageIQ::PostgresHaAdmin::LogicalReplicationConfigHandler) }
       expect(handlers.count).to eq(2)
-      expect(%w(sub_id_1 sub_id_2)).to include(handlers.first.subscription)
-      expect(%w(sub_id_1 sub_id_2)).to include(handlers.last.subscription)
+      expect(%w[sub_id_1 sub_id_2]).to include(handlers.first.subscription)
+      expect(%w[sub_id_1 sub_id_2]).to include(handlers.last.subscription)
       expect(handlers.first.subscription).not_to eq(handlers.last.subscription)
+    end
+  end
+
+  context "seeding?" do
+    it "detects seeding" do
+      expect(EvmDatabase.seeding?).to be(false)
+      EvmDatabase.with_seed do
+        expect(EvmDatabase.seeding?).to be(true)
+      end
+      expect(EvmDatabase.seeding?).to be(false)
     end
   end
 end

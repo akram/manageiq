@@ -1,7 +1,5 @@
 module ManageIQ::Providers
   class BaseManager < ExtManagementSystem
-    require_nested :Refresher
-
     include Inflector::Methods
 
     def self.metrics_collector_queue_name
@@ -21,12 +19,25 @@ module ManageIQ::Providers
     end
     delegate :catalog_types, :to => :class
 
+    # Return the names of all of the manager types e.g.: InfraManager, CloudManager, etc...
+    def self.manager_type_names
+      @manager_types ||= subclasses.map { |k| k.name.gsub("ManageIQ::Providers::", "") }
+    end
+
     def refresher
       self.class::Refresher
     end
 
     def http_proxy_uri
       self.class.http_proxy_uri
+    end
+
+    def http_proxy
+      self.class.http_proxy
+    end
+
+    def console_url
+      raise NotImplementedError, _("console_url must be implemented in a subclass")
     end
 
     # copy my attributes to a child manager
@@ -46,17 +57,18 @@ module ManageIQ::Providers
       VMDB::Util.http_proxy_uri(ems_type.try(:to_sym)) || VMDB::Util.http_proxy_uri
     end
 
-    def self.default_blacklisted_event_names
-      Array(::Settings.ems["ems_#{provider_name.underscore}"].try(:blacklisted_event_names))
+    def self.http_proxy
+      VMDB::Util.http_proxy(ems_type.try(:to_sym)) || VMDB::Util.http_proxy
     end
+
+    def self.filtered_event_names
+      Array(::Settings.ems["ems_#{ems_type}"].try(:blacklisted_event_names))
+    end
+    delegate :filtered_event_names, :to => :class
 
     # Returns a description of the options that are stored in "options" field.
     def self.options_description
       {}
     end
-  end
-
-  def self.display_name(number = 1)
-    n_('Manager', 'Managers', number)
   end
 end

@@ -96,7 +96,7 @@ RSpec.describe ManageIQ::Providers::BaseManager::Refresher do
     let(:persister) { Spec::Support::EmsRefreshHelper::TestPersister.new(ems) }
 
     before do
-      stub_settings_merge(:ems_refresh => {:syndicate_inventory => true}, :prototype => {:messaging_type => 'kafka'})
+      stub_settings_merge(:ems_refresh => {:syndicate_inventory => true}, :messaging => {:type => 'kafka'})
       allow(MiqQueue).to receive(:messaging_client).and_return(messaging_client)
     end
 
@@ -104,8 +104,7 @@ RSpec.describe ManageIQ::Providers::BaseManager::Refresher do
       it "doesn't publish anything" do
         expect(messaging_client).not_to receive(:publish_topic)
 
-        refresher = described_class.new([ems])
-        refresher.publish_inventory(ems, ems, persister)
+        persister.publish_inventory(ems, ems)
       end
     end
 
@@ -129,8 +128,7 @@ RSpec.describe ManageIQ::Providers::BaseManager::Refresher do
           )
         )
 
-        refresher = described_class.new([ems])
-        refresher.publish_inventory(ems, ems, persister)
+        persister.publish_inventory(ems, ems)
       end
     end
 
@@ -177,8 +175,7 @@ RSpec.describe ManageIQ::Providers::BaseManager::Refresher do
           )
         )
 
-        refresher = described_class.new([ems])
-        refresher.publish_inventory(ems, ems, persister)
+        persister.publish_inventory(ems, ems)
       end
     end
   end

@@ -7,14 +7,14 @@ RSpec.describe TaskHelpers::Imports::Widgets do
     let(:widget_name2) { "Test Widget Import" }
     let(:widget_title1) { "Test Widget" }
     let(:widget_title2) { "Test Widget Import" }
-    let(:widget_cols1) { %w(name power_state last_scan_on) }
-    let(:widget_cols2) { %w(name power_state) }
+    let(:widget_cols1) { %w[name power_state last_scan_on] }
+    let(:widget_cols2) { %w[name power_state] }
     let(:attr_err_file) { "Test_Widget_attr_error.yml" }
     let(:runt_err_file) { "Test_Widget_runtime_error.yml" }
-    let(:options) { { :source => source } }
+    let(:options) { {:source => source} }
 
     before do
-      _guid, @miq_server, @zone = EvmSpecHelper.create_guid_miq_server_zone
+      EvmSpecHelper.local_miq_server
       FactoryBot.create(:user_admin, :userid => "admin")
     end
 

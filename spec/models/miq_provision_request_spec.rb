@@ -25,7 +25,7 @@ RSpec.describe MiqProvisionRequest do
     end
 
     it "fails to retrieve the provision class when the vm does not exist" do
-      expect { described_class.request_task_class_from('options' => {:src_vm_id => -1 }) }.to raise_error(MiqException::MiqProvisionError)
+      expect { described_class.request_task_class_from('options' => {:src_vm_id => -1}) }.to raise_error(MiqException::MiqProvisionError)
     end
   end
 
@@ -116,12 +116,12 @@ RSpec.describe MiqProvisionRequest do
         end
 
         it "should not delete Approver" do
-          expect { approver.reload }.not_to raise_error
+          expect(approver).not_to be_deleted
         end
       end
 
       context "when calling quota methods" do
-        before { EvmSpecHelper.create_guid_miq_server_zone }
+        before { EvmSpecHelper.local_miq_server }
 
         it "should return a hash for quota methods" do
           [:vms_by_group, :vms_by_owner, :retired_vms_by_group, :retired_vms_by_owner, :provisions_by_group, :provisions_by_owner,

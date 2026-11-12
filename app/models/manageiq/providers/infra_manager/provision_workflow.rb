@@ -1,12 +1,23 @@
-class ManageIQ::Providers::InfraManager::ProvisionWorkflow < ::MiqProvisionVirtWorkflow
+class ManageIQ::Providers::InfraManager::ProvisionWorkflow < MiqProvisionVirtWorkflow
   def set_or_default_hardware_field_values(vm)
     update_values = {
       :vm_memory      => vm.hardware.memory_mb.to_s,
       :cpu_limit      => vm.cpu_limit,
       :memory_limit   => vm.memory_limit,
       :cpu_reserve    => vm.cpu_reserve,
-      :memory_reserve => vm.memory_reserve
+      :memory_reserve => vm.memory_reserve,
     }.merge!(get_cpu_values_hash(vm))
+
+    # TODO: short-term fix to only enable :allocated_disk_storage in machines that have a single hard disk
+    #   in the long-term it should be able to deal with multiple hard disks
+    virtual_disk_array = vm.hardware.disks.where(:device_type => "disk")
+    if virtual_disk_array.length == 1
+      virtual_disk = virtual_disk_array.first
+      default_size = virtual_disk.size.to_f / 1.gigabyte
+
+      update_values.update(:allocated_disk_storage => default_size.to_s) unless default_size.zero?
+    end
+
     set_or_default_field_values(update_values)
   end
 
@@ -23,12 +34,14 @@ class ManageIQ::Providers::InfraManager::ProvisionWorkflow < ::MiqProvisionVirtW
   def allowed_ci(ci, relats, filtered_ids = nil)
     return {} if get_value(@values[:placement_auto]) == true
     return {} if (sources = resources_for_ui).blank?
+
     get_ems_metadata_tree(sources)
     super(ci, relats, sources, filtered_ids)
   end
 
   def get_source_and_targets(refresh = false)
     return @target_resource if @target_resource && refresh == false
+
     result = super
     return result if result.blank?
 
@@ -41,7 +54,7 @@ class ManageIQ::Providers::InfraManager::ProvisionWorkflow < ::MiqProvisionVirtW
     if result[:folder_id].nil?
       add_target(:placement_dc_name, :datacenter, EmsFolder, result)
     else
-      result[:datacenter] = find_datacenter_for_ci(result[:folder], get_ems_metadata_tree(result))
+      result[:datacenter] = find_datacenter_for_ci(result[:folder], get_ems_metadata_tree(result)) unless result[:folder].nil?
       result[:datacenter_id] = result[:datacenter].id unless result[:datacenter].nil?
     end
 

@@ -78,16 +78,14 @@ module ManageIQ::Providers
       define_method(:singular_route_key) { "ems_physical_infra" }
     end
 
+    supports :authentication_status
+
     def self.ems_type
       @ems_type ||= "physical_infra_manager".freeze
     end
 
     def self.description
       @description ||= "PhysicalInfraManager".freeze
-    end
-
-    def validate_authentication_status
-      {:available => true, :message => nil}
     end
 
     def count_health_state(state)
@@ -142,20 +140,6 @@ module ManageIQ::Providers
     end
 
     alias total_vms count_vms
-
-    supports :console do
-      unless console_supported?
-        unsupported_reason_add(:console, N_("Console not supported"))
-      end
-    end
-
-    def console_supported?
-      false
-    end
-
-    def console_url
-      raise MiqException::Error, _("Console not supported")
-    end
 
     def self.firmware_update_class
       self::FirmwareUpdateTask

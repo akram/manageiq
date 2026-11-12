@@ -1,5 +1,6 @@
 RSpec.describe ChargebackVm do
   include Spec::Support::ChargebackHelper
+  include Spec::Support::SupportsHelper
 
   let(:admin) { FactoryBot.create(:user_admin) }
   let(:base_options) do
@@ -59,13 +60,12 @@ RSpec.describe ChargebackVm do
   end
 
   before do
-    MiqRegion.seed
     ChargebackRateDetailMeasure.seed
     ChargeableField.seed
     ManageIQ::Showback::InputMeasure.seed
     MiqEnterprise.seed
 
-    EvmSpecHelper.create_guid_miq_server_zone
+    EvmSpecHelper.local_miq_server
     cat = FactoryBot.create(:classification, :description => "Environment", :name => "environment", :single_value => true, :show => true)
     c = FactoryBot.create(:classification, :name => "prod", :description => "Production", :parent_id => cat.id)
     @tag = Tag.find_by(:name => "/managed/environment/prod")
@@ -224,7 +224,7 @@ RSpec.describe ChargebackVm do
           let(:parent_classification) { FactoryBot.create(:classification) }
           let(:classification)        { FactoryBot.create(:classification, :parent_id => parent_classification.id) }
 
-          let(:rate_assignment_options) { {:cb_rate => storage_chargeback_rate, :object => MiqEnterprise.first } }
+          let(:rate_assignment_options) { {:cb_rate => storage_chargeback_rate, :object => MiqEnterprise.first} }
           let(:options) { base_options.merge(:interval => 'daily', :tag => nil, :entity_id => resource.id, :include_metrics => false) }
 
           before do
@@ -443,24 +443,22 @@ RSpec.describe ChargebackVm do
     end
 
     context "Report a chargeback of a tenant" do
-      let(:options_tenant) { base_options.merge(:tenant_id => @tenant.id).tap { |t| t.delete(:tag) } }
+      let(:tenant) { FactoryBot.create(:tenant) }
+      let(:tenant_child) { FactoryBot.create(:tenant, :parent => tenant) }
+      let(:options_tenant) { base_options.merge(:tenant_id => tenant).tap { |t| t.delete(:tag) } }
 
       let(:start_time)  { report_run_time - 17.hours }
       let(:finish_time) { report_run_time - 14.hours }
-
-      before do
-        @tenant = FactoryBot.create(:tenant)
-        @tenant_child = FactoryBot.create(:tenant, :parent => @tenant)
-        @vm_tenant = FactoryBot.create(:vm_vmware, :tenant_id => @tenant_child.id,
-                                        :name => "test_vm_tenant", :created_on => month_beginning)
-
-        add_metric_rollups_for(@vm_tenant, start_time...finish_time, 1.hour, metric_rollup_params)
+      let!(:vm) do
+        FactoryBot.create(:vm_vmware, :tenant => tenant_child, :created_on => month_beginning).tap do |vm|
+          add_metric_rollups_for(vm, start_time...finish_time, 1.hour, metric_rollup_params)
+        end
       end
 
       subject { ChargebackVm.build_results_for_report_ChargebackVm(options_tenant).first.first }
 
       it "report a chargeback of a subtenant" do
-        expect(subject.vm_name).to eq(@vm_tenant.name)
+        expect(subject.vm_name).to eq(vm.name)
       end
     end
 
@@ -906,7 +904,7 @@ RSpec.describe ChargebackVm do
 
       context "by owner" do
         let(:user) { FactoryBot.create(:user, :name => 'Test VM Owner', :userid => 'test_user') }
-        let(:options) { {:interval_size => 4, :owner => user.userid, :ext_options => {:tz => 'Eastern Time (US & Canada)'} } }
+        let(:options) { {:interval_size => 4, :owner => user.userid, :ext_options => {:tz => 'Eastern Time (US & Canada)'}} }
         before do
           @vm1.update_attribute(:evm_owner, user)
         end
@@ -970,7 +968,7 @@ RSpec.describe ChargebackVm do
           ChargebackRate.set_assignments(:storage, [rate_assignment_options])
         end
 
-        it "chooses rate according to cloud_volume\'s tag" do
+        it "chooses rate according to cloud_volume's tag" do
           cloud_volume_sdd.tag_with([classification.tag.name], :ns => '*')
 
           expect(subject).to eq(storage_chargeback_rate)
@@ -1094,7 +1092,7 @@ RSpec.describe ChargebackVm do
 
       before do
         # fix fixed computes cost tier - we are not using variable part
-        detail_params[:chargeback_rate_detail_fixed_compute_cost][:tiers] = [{:fixed_rate => count_hourly_rate.to_s }]
+        detail_params[:chargeback_rate_detail_fixed_compute_cost][:tiers] = [{:fixed_rate => count_hourly_rate.to_s}]
 
         vm.tag_with([classification_1_1.tag.name, classification_2_1.tag.name], :ns => '*')
 
@@ -1343,7 +1341,6 @@ RSpec.describe ChargebackVm do
       end
 
       context "Group by single tag category" do
-
         let(:options) { base_options.merge(:interval => 'monthly', :groupby_tag => 'environment') }
         before do
           add_metric_rollups_for(@vm1, month_beginning...month_end, 12.hours, metric_rollup_params)
@@ -1521,11 +1518,12 @@ RSpec.describe ChargebackVm do
     let(:cpu_cost) { cores * count_hourly_rate * 24 }
     let(:disk_cost) { disk_gb * count_hourly_rate * 24 }
 
-    context 'for SCVMM (hyper-v)' do
+    context 'for VMs not supporting metrics capture' do
       let!(:vm1) do
-        vm = FactoryBot.create(:vm_microsoft, :hardware => hardware, :created_on => report_run_time - 1.day)
-        vm.tag_with(@tag.name, :ns => '*')
-        vm
+        FactoryBot.create(:vm_infra, :hardware => hardware, :created_on => report_run_time - 1.day).tap do |vm|
+          vm.tag_with(@tag.name, :ns => '*')
+          stub_supports_not(vm, :capture)
+        end
       end
 
       let(:options) { base_options.merge(:interval => 'daily') }
@@ -1551,7 +1549,7 @@ RSpec.describe ChargebackVm do
       context "group by tags" do
         let!(:tag_category_qa) { FactoryBot.create(:classification_tag, :parent => @tag.category, :name => "qa", :description => "QA") }
 
-        let!(:vm_qa)  { FactoryBot.create(:vm_microsoft, :hardware => hardware, :created_on => report_run_time - 1.day) }
+        let!(:vm_qa)  { FactoryBot.create(:vm_infra, :hardware => hardware, :created_on => report_run_time - 1.day) }
         let(:options) { base_options.except(:tag, :userid).merge(:groupby => "tag", :tenant_id => vm1.tenant.id.to_s, :interval => 'daily', :groupby_tag => 'environment') }
 
         let(:rate_assignment_options) { {:cb_rate => chargeback_rate, :object => MiqEnterprise.first} }

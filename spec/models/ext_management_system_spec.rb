@@ -1,4 +1,6 @@
 RSpec.describe ExtManagementSystem do
+  include Spec::Support::SupportsHelper
+
   it "supports label mapping for provider subclasses" do
     expect(ExtManagementSystem.entities_for_label_mapping.keys).to include("VmOpenstack", "VmIBM")
   end
@@ -36,21 +38,16 @@ RSpec.describe ExtManagementSystem do
     end
   end
 
-  it ".model_name_from_emstype" do
+  describe ".model_name_from_emstype" do
     described_class.concrete_subclasses.each do |klass|
-      expect(described_class.model_name_from_emstype(klass.ems_type)).to eq(klass.name)
+      it "has a model name for #{klass.ems_type}", :providers_common => true do
+        expect(described_class.model_name_from_emstype(klass.ems_type)).to eq(klass.name)
+      end
     end
-    expect(described_class.model_name_from_emstype('foo')).to be_nil
-  end
 
-  it ".create_discovered_ems" do
-    ost = OpenStruct.new(:ipaddr => "0.0.0.0", :hypervisor => [:virtualcenter])
-
-    allow(MiqServer).to receive(:my_server).and_return(
-      double("MiqServer", :zone => double("Zone", :name => "foo", :id => 1)))
-    expect(AuditEvent).to receive(:success)
-
-    described_class.create_discovered_ems(ost)
+    it "handles unknown model names" do
+      expect(described_class.model_name_from_emstype('foo')).to be_nil
+    end
   end
 
   describe ".types" do
@@ -135,7 +132,7 @@ RSpec.describe ExtManagementSystem do
   end
 
   it ".ems_infra_discovery_types" do
-    expected_types = %w(scvmm rhevm virtualcenter openstack_infra)
+    expected_types = %w[rhevm virtualcenter openstack_infra]
 
     expect(described_class.ems_infra_discovery_types).to match_array(expected_types)
   end
@@ -331,15 +328,15 @@ RSpec.describe ExtManagementSystem do
     end
 
     it "refresh_all_ems_timer will refresh for all emses in zone1" do
+      EvmSpecHelper.local_miq_server(:is_master => true, :zone => @zone1)
       @ems1 = @zone1.ext_management_systems.first
-      allow(MiqServer).to receive(:my_server).and_return(@zone1.miq_servers.first)
       expect(described_class).to receive(:refresh_ems).with([@ems1.id], true)
       described_class.refresh_all_ems_timer
     end
 
     it "refresh_all_ems_timer will refresh for all emses in zone2" do
       @ems2 = @zone2.ext_management_systems.first
-      allow(MiqServer).to receive(:my_server).and_return(@zone2.miq_servers.first)
+      EvmSpecHelper.local_miq_server(:is_master => true, :zone => @zone2)
       expect(described_class).to receive(:refresh_ems).with([@ems2.id], true)
       described_class.refresh_all_ems_timer
     end
@@ -440,7 +437,7 @@ RSpec.describe ExtManagementSystem do
       expect(@ems.total_vms_suspended).to eq(2)
     end
 
-    %w(total_vms_on total_vms_off total_vms_unknown total_vms_never total_vms_suspended).each do |vcol|
+    %w[total_vms_on total_vms_off total_vms_unknown total_vms_never total_vms_suspended].each do |vcol|
       it "should have virtual column #{vcol} " do
         expect(described_class).to have_virtual_column vcol.to_s, :integer
       end
@@ -495,7 +492,7 @@ RSpec.describe ExtManagementSystem do
       end
 
       it "allowing duplicate hostname for different type providers" do
-        FactoryBot.create(:ems_microsoft, :hostname => @ems.hostname, :tenant => @tenant2)
+        FactoryBot.create(:ems_ovirt, :hostname => @ems.hostname, :tenant => @tenant2)
         expect(ExtManagementSystem.count).to eq(2)
       end
     end
@@ -506,147 +503,6 @@ RSpec.describe ExtManagementSystem do
     it "has a tenant" do
       ems = FactoryBot.create(:ext_management_system, :tenant => tenant)
       expect(tenant.ext_management_systems).to include(ems)
-    end
-  end
-
-  context "#pause!" do
-    before do
-      MiqRegion.seed
-      Zone.seed
-    end
-
-    it 'disables an ems with child managers and moves them to maintenance zone' do
-      zone  = FactoryBot.create(:zone)
-      ems   = FactoryBot.create(:ext_management_system, :zone => zone)
-      child = FactoryBot.create(:ext_management_system, :zone => zone)
-      ems.child_managers << child
-
-      2.times do
-        ems.pause!
-
-        expect(ems.enabled).to eq(false)
-        expect(ems.zone).to eq(Zone.maintenance_zone)
-        expect(ems.zone_before_pause).to eq(zone)
-
-        child.reload
-        expect(child.enabled).to eq(false)
-        expect(child.zone).to eq(Zone.maintenance_zone)
-        expect(child.zone_before_pause).to eq(zone)
-      end
-    end
-
-    it 'disables an ems and moves child managers created by ensure_managers() to maintenance zone' do
-      zone  = FactoryBot.create(:zone)
-      emses = {
-        :amazon_cloud    => FactoryBot.create(:ems_amazon,          :zone => zone),
-        :azure_cloud     => FactoryBot.create(:ems_azure,           :zone => zone),
-        :google_cloud    => FactoryBot.create(:ems_google,          :zone => zone),
-        :openstack_cloud => FactoryBot.create(:ems_openstack,       :zone => zone),
-        :openstack_infra => FactoryBot.create(:ems_openstack_infra, :zone => zone),
-        :vmware_cloud    => FactoryBot.create(:ems_vmware_cloud,    :zone => zone),
-        :vpc_cloud       => FactoryBot.create(:ems_ibm_cloud_vpc,   :zone => zone)
-      }
-
-      2.times do
-        # managers with child managers created with ensure_managers() callback has own callback to change zone
-        # so it should be tested separately
-        emses.each_value do |manager|
-          manager.pause!
-
-          manager.reload
-          expect(manager.network_manager.enabled).to be_falsey
-          expect(manager.network_manager.zone_before_pause).to eq(zone)
-          expect(manager.network_manager.zone).to eq(Zone.maintenance_zone)
-        end
-
-        # The same for storage managers, i.e. amazon
-        %i[amazon_cloud openstack_cloud].each do |manager_type|
-          emses[manager_type].storage_managers.each do |storage_manager|
-            expect(storage_manager.enabled).to be_falsey
-            expect(storage_manager.zone_before_pause).to eq(zone)
-            expect(storage_manager.zone).to eq(Zone.maintenance_zone)
-          end
-        end
-      end
-    end
-  end
-
-  context "#resume" do
-    before do
-      MiqRegion.seed
-      Zone.seed
-    end
-
-    it "enables an ems with child managers and move them from maintenance zone" do
-      zone = FactoryBot.create(:zone)
-      ems = FactoryBot.create(:ext_management_system,
-                               :zone_before_pause => zone,
-                               :zone              => Zone.maintenance_zone,
-                               :enabled           => false)
-
-      child = FactoryBot.create(:ext_management_system,
-                                 :zone_before_pause => zone,
-                                 :zone              => Zone.maintenance_zone,
-                                 :enabled           => false)
-      ems.child_managers << child
-
-      ems.resume!
-
-      expect(ems.enabled).to eq(true)
-      expect(ems.zone).to eq(zone)
-      expect(ems.zone_before_pause).to be_nil
-
-      child.reload
-      expect(child.enabled).to eq(true)
-      expect(child.zone).to eq(zone)
-      expect(child.zone_before_pause).to be_nil
-    end
-
-    it "doesn't change zone when ems was disabled before" do
-      zone = FactoryBot.create(:zone)
-      ems = FactoryBot.create(:ext_management_system,
-                               :zone_before_pause => nil,
-                               :zone              => zone,
-                               :enabled           => false)
-
-      ems.resume!
-
-      expect(ems.enabled).to eq(true)
-      expect(ems.zone).to eq(zone)
-    end
-
-    it 'enables an ems and moves child managers created by ensure_managers() to original zone' do
-      zone  = FactoryBot.create(:zone)
-      # Cannot create paused child managers this way, so we first pause! (tested yet) and then resume!
-      emses = {
-        :amazon_cloud    => FactoryBot.create(:ems_amazon,          :zone => zone),
-        :azure_cloud     => FactoryBot.create(:ems_azure,           :zone => zone),
-        :google_cloud    => FactoryBot.create(:ems_google,          :zone => zone),
-        :openstack_cloud => FactoryBot.create(:ems_openstack,       :zone => zone),
-        :openstack_infra => FactoryBot.create(:ems_openstack_infra, :zone => zone),
-        :vmware_cloud    => FactoryBot.create(:ems_vmware_cloud,    :zone => zone),
-      }
-
-      # managers with child managers created with ensure_managers() callback has own callback to change zone
-      # so it should be tested separately
-      emses.each_value do |manager|
-        manager.pause!
-        manager.reload
-
-        manager.resume!
-        manager.reload
-
-        expect(manager.network_manager.zone_before_pause).to be_nil
-        expect(manager.network_manager.zone).to eq(zone)
-      end
-
-      # The same for storage managers, i.e. amazon
-      %i(amazon_cloud openstack_cloud).each do |manager_type|
-        emses[manager_type].storage_managers.each do |storage_manager|
-          expect(storage_manager.zone_before_pause).to be_nil
-          expect(storage_manager.zone).to eq(zone)
-        end
-      end
     end
   end
 
@@ -676,7 +532,6 @@ RSpec.describe ExtManagementSystem do
 
   context "changing zone" do
     before do
-      MiqRegion.seed
       Zone.seed
     end
 
@@ -722,9 +577,7 @@ RSpec.describe ExtManagementSystem do
       ems.orchestrate_destroy
 
       # Simulate another process delivering the worker kill message
-      queue_message = MiqQueue.order(:id).first
-      status, message, result = queue_message.deliver
-      queue_message.delivered(status, message, result)
+      MiqQueue.order(:id).first.deliver_and_process
 
       expect(ExtManagementSystem.count).to eq(0)
       expect(worker.class.exists?(worker.id)).to eq(false)
@@ -766,7 +619,10 @@ RSpec.describe ExtManagementSystem do
     it "destroys the ems when no active worker exists" do
       ems.destroy_queue
 
-      expect(MiqQueue.count).to eq(2)
+      # test pauses at high priority
+      # test destroy has extended timeout
+      expect(MiqQueue.where(:method_name => "pause!", :priority => MiqQueue::HIGH_PRIORITY).count).to eq(1)
+      expect(MiqQueue.where(:method_name => "orchestrate_destroy", :msg_timeout => 3_600).count).to eq(1)
 
       deliver_queue_message # Deliver the `#pause!` queue item
       deliver_queue_message # Deliver the `#orchestrate_destroy` queue item
@@ -798,7 +654,8 @@ RSpec.describe ExtManagementSystem do
       deliver_queue_message(MiqQueue.find_by(:method_name => "orchestrate_destroy"))
       deliver_queue_message
 
-      expect(MiqQueue.count).to eq(1)
+      # test non-nil deliver on and extended timeout
+      expect(MiqQueue.where(:msg_timeout => 3_600).where.not(:deliver_on => nil).count).to eq(1)
       expect(ExtManagementSystem.count).to eq(1)
 
       deliver_queue_message
@@ -808,13 +665,12 @@ RSpec.describe ExtManagementSystem do
     end
 
     def deliver_queue_message(queue_message = MiqQueue.order(:id).first)
-      status, message, result = queue_message.deliver
-      queue_message.delivered(status, message, result)
+      queue_message.deliver_and_process
     end
   end
 
   describe ".create_from_params" do
-    let(:zone)   { EvmSpecHelper.create_guid_miq_server_zone.last }
+    let(:zone)   { EvmSpecHelper.local_miq_server.zone }
     let(:params) { {"name" => "My Provider", "zone_id" => zone.id.to_s, "type" => "ManageIQ::Providers::Amazon::CloudManager", "provider_region" => "us-east-1"} }
     let(:endpoints) { [{"role" => "default"}] }
 
@@ -847,19 +703,45 @@ RSpec.describe ExtManagementSystem do
     end
   end
 
-  context "virtual column :supports_block_storage" do
+  context "virtual column :supports_block_storage (direct supports)" do
+    it "returns false if block storage is not supported" do
+      ems = FactoryBot.create(:ext_management_system)
+      stub_supports_not(ems.class, :block_storage)
+      expect(ems.supports?(:block_storage)).to eq(false)
+    end
+
     it "returns true if block storage is supported" do
       ems = FactoryBot.create(:ext_management_system)
-      allow(ems).to receive(:supports_block_storage).and_return(true)
-      expect(ems.supports_block_storage).to eq(true)
+      stub_supports(ems.class, :block_storage)
+      expect(ems.supports?(:block_storage)).to eq(true)
     end
   end
 
-  context "virtual column :supports_cloud_object_store_container_create" do
+  context "virtual column :supports_cloud_object_store_container_create (child class supports)" do
+    it "returns false if cloud_object_store_container_create is not supported" do
+      ems = FactoryBot.create(:ems_storage)
+      stub_supports_not(ems.class_by_ems("CloudObjectStoreContainer"), :create)
+      expect(ems.supports_cloud_object_store_container_create).to eq(false)
+    end
+
     it "returns true if cloud_object_store_container_create is supported" do
-      ems = FactoryBot.create(:ext_management_system)
-      allow(ems).to receive(:supports_cloud_object_store_container_create).and_return(true)
+      ems = FactoryBot.create(:ems_storage)
+      stub_supports(ems.class_by_ems("CloudObjectStoreContainer"), :create)
       expect(ems.supports_cloud_object_store_container_create).to eq(true)
+    end
+  end
+
+  context "virtual column :supports_cloud_database_create (child class supports)" do
+    it "returns false if cloud_object_store_container_create is not supported" do
+      ems = FactoryBot.create(:ems_cloud)
+      stub_supports_not(ems.class_by_ems("CloudDatabase"), :create)
+      expect(ems.supports_cloud_database_create).to eq(false)
+    end
+
+    it "returns true if cloud_database_create is supported" do
+      ems = FactoryBot.create(:ems_cloud)
+      stub_supports(ems.class_by_ems("CloudDatabase"), :create)
+      expect(ems.supports_cloud_database_create).to eq(true)
     end
   end
 
@@ -886,7 +768,7 @@ RSpec.describe ExtManagementSystem do
 
       result = ExtManagementSystem.inventory_status
       expect(result.size).to eq(2)
-      expect(result[0]).to eq(%w(region zone kind ems hosts vms))
+      expect(result[0]).to eq(%w[region zone kind ems hosts vms])
       expect(result[1][4..-1]).to eq([1, 2])
     end
 
@@ -896,7 +778,7 @@ RSpec.describe ExtManagementSystem do
       FactoryBot.create(:container, :ems_id => ems.id)
       result = ExtManagementSystem.inventory_status
       expect(result.size).to eq(2)
-      expect(result[0]).to eq(%w(region zone kind ems containers))
+      expect(result[0]).to eq(%w[region zone kind ems containers])
       expect(result[1][4..-1]).to eq([2])
     end
   end
@@ -919,12 +801,20 @@ RSpec.describe ExtManagementSystem do
 
     it "defaults to false" do
       ems = ExtManagementSystem.new
-      expect(ems.supports_block_storage).to be(false)
+      expect(ems.supports?(:block_storage)).to be(false)
     end
 
     it "detects security group for provider" do
       ems = FactoryBot.build(:ems_openstack_network)
       expect(ems.supports_create_security_group).to be(true)
+    end
+  end
+
+  describe "#image_name", :providers_common => true do
+    described_class.concrete_subclasses.each do |klass|
+      it "has a vendor asset for #{klass.ems_type}" do
+        expect(ActionController::Base.helpers.asset_path("svg/vendor-#{klass.new.image_name}.svg")).to_not be_blank
+      end
     end
   end
 end

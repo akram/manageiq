@@ -15,7 +15,6 @@ class Tenant < ApplicationRecord
   default_value_for :name,        "My Company"
   default_value_for :description, "Tenant for My Company"
   default_value_for :divisible,   true
-  default_value_for :use_config_for_attributes, false
 
   before_destroy :ensure_can_be_destroyed
 
@@ -40,7 +39,7 @@ class Tenant < ApplicationRecord
   has_many :authentications, :dependent => :nullify
   has_many :miq_product_features, :dependent => :destroy
   has_many :service_template_tenants, :dependent => :destroy
-  has_many :service_templates, :through => :service_template_tenants, :dependent => :destroy
+  has_many :service_templates, :through => :service_template_tenants
 
   belongs_to :default_miq_group, :class_name => "MiqGroup", :dependent => :destroy
   belongs_to :source, :polymorphic => true
@@ -49,7 +48,7 @@ class Tenant < ApplicationRecord
   validates :domain,    :uniqueness_when_changed => true, :allow_nil => true
   validate  :validate_only_one_root
   validates :description, :presence => true
-  validates :name, :presence                  => true, :unless => :use_config_for_attributes?,
+  validates :name, :presence                  => true,
                    :uniqueness_when_changed   => {:scope      => :ancestry,
                                                   :conditions => -> { in_my_region },
                                                   :message    => "should be unique per parent"}
@@ -111,27 +110,19 @@ class Tenant < ApplicationRecord
   end
 
   def self.regional_tenants(tenant)
-    where(arel_table.grouping(Arel::Nodes::NamedFunction.new("LOWER", [arel_attribute(:name)]).eq(tenant.name.downcase)))
+    where(arel_table.grouping(arel_table.lower(arel_table[:name]).eq(tenant.name.downcase)))
   end
 
   def accessible_tenant_ids(strategy = nil)
     (strategy ? regional_tenants.map(&strategy.to_sym).flatten : []) + regional_tenants.ids
   end
 
-  def name
-    tenant_attribute(:name, :company)
-  end
-
   def parent_name
-    parent.try(:name)
+    parent&.name
   end
 
   def display_type
     project? ? "Project" : "Tenant"
-  end
-
-  def login_text
-    tenant_attribute(:login_text, :custom_login_text)
   end
 
   def get_quotas
@@ -154,8 +145,8 @@ class Tenant < ApplicationRecord
       end
       # Delete any quotas that were not passed in
       tenant_quotas.destroy_missing(updated_keys)
-      # unfortunatly, an extra scope is created in destroy_missing, so we need to reload the records
-      clear_association_cache
+      # unfortunately, an extra scope is created in destroy_missing, so we need to reload the records
+      tenant_quotas.reload
     end
 
     get_quotas
@@ -259,7 +250,7 @@ class Tenant < ApplicationRecord
 
   # NOTE: returns the root tenant
   def self.seed
-    root_tenant || create!(:use_config_for_attributes => true) do |_|
+    root_tenant || create! do |_|
       _log.info("Creating root tenant")
     end
   end
@@ -275,10 +266,10 @@ class Tenant < ApplicationRecord
   #     [["tenant/tenant2/project4", 4]]
   #   ]
   def self.tenant_and_project_names
-    all_tenants_and_projects = Tenant.in_my_region.select(:id, :ancestry, :divisible, :use_config_for_attributes, :name)
+    all_tenants_and_projects = Tenant.in_my_region.select(:id, :ancestry, :divisible, :name)
     tenants_by_id = all_tenants_and_projects.index_by(&:id)
 
-    tenants_and_projects = Rbac.filtered(Tenant.in_my_region.select(:id, :ancestry, :divisible, :use_config_for_attributes, :name))
+    tenants_and_projects = Rbac.filtered(Tenant.in_my_region.select(:id, :ancestry, :divisible, :name))
                            .to_a.sort_by { |t| [t.ancestry || "", t.name] }
 
     tenants_and_projects.partition(&:divisible?).map do |tenants|
@@ -303,6 +294,7 @@ class Tenant < ApplicationRecord
     data_tenant = []
     all_subtenants.each do |subtenant|
       next unless subtenant.parent_name == name
+
       data_tenant.push(:name => subtenant.name, :id => subtenant.id, :parent => id)
       if subtenant.all_subtenants.count > 0
         data_tenant.concat(subtenant.build_tenant_tree)
@@ -328,19 +320,6 @@ class Tenant < ApplicationRecord
   end
 
   private
-
-  # when a root tenant has an attribute with a nil value,
-  #   read the value from the configurations table instead
-  #
-  # @return the attribute value
-  def tenant_attribute(attr_name, setting_name)
-    if use_config_for_attributes?
-      ret = ::Settings.server[setting_name]
-      block_given? ? yield(ret) : ret
-    else
-      self[attr_name]
-    end
-  end
 
   def nil_blanks
     self.subdomain = nil unless subdomain.present?

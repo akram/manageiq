@@ -42,7 +42,7 @@ class ServiceTemplateAnsiblePlaybook < ServiceTemplateGeneric
 
     transaction do
       create_from_options(options).tap do |service_template|
-        dialog_ids = service_template.send(:create_dialogs, config_info)
+        dialog_ids = service_template.create_dialogs(config_info)
         config_info.deep_merge!(dialog_ids)
         service_template.options[:config_info].deep_merge!(dialog_ids)
         service_template.create_resource_actions(config_info)
@@ -105,21 +105,23 @@ class ServiceTemplateAnsiblePlaybook < ServiceTemplateGeneric
     retirement_jt_exists && services.where(:retired => false).exists?
   end
 
-  private
-
-  def check_retirement_potential
-    return true unless retirement_potential?
-    error_text = 'Destroy aborted.  Active Services require retirement resources associated with this instance.'
-    errors[:base] << error_text
-    throw :abort
-  end
-
   def create_dialogs(config_info)
     [:provision, :retirement, :reconfigure].each_with_object({}) do |action, hash|
       info = config_info[action]
       next unless new_dialog_required?(info)
+
       hash[action] = {:dialog_id => create_new_dialog(info[:new_dialog_name], info[:extra_vars], info[:hosts]).id}
     end
+  end
+
+  private
+
+  def check_retirement_potential
+    return true unless retirement_potential?
+
+    error_text = 'Destroy aborted.  Active Services require retirement resources associated with this instance.'
+    errors.add(:base, error_text)
+    throw :abort
   end
 
   def new_dialog_required?(info)

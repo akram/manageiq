@@ -53,6 +53,30 @@ FactoryBot.define do
           :parent => :authentication,
           :class  => "ManageIQ::Providers::EmbeddedAutomationManager::Authentication"
 
+  factory :awx_credential,
+          :parent => :automation_manager_authentication,
+          :class  => "ManageIQ::Providers::Awx::AutomationManager::Credential"
+
+  factory :awx_cloud_credential,
+          :parent => :awx_credential,
+          :class  => "ManageIQ::Providers::Awx::AutomationManager::CloudCredential"
+
+  factory :awx_machine_credential,
+          :parent => :awx_credential,
+          :class  => "ManageIQ::Providers::Awx::AutomationManager::MachineCredential"
+
+  factory :awx_vault_credential,
+          :parent => :awx_credential,
+          :class  => "ManageIQ::Providers::Awx::AutomationManager::VaultCredential"
+
+  factory :awx_network_credential,
+          :parent => :awx_credential,
+          :class  => "ManageIQ::Providers::Awx::AutomationManager::NetworkCredential"
+
+  factory :awx_scm_credential,
+          :parent => :awx_credential,
+          :class  => "ManageIQ::Providers::Awx::AutomationManager::ScmCredential"
+
   factory :ansible_credential,
           :parent => :automation_manager_authentication,
           :class  => "ManageIQ::Providers::AnsibleTower::AutomationManager::Credential"
@@ -124,6 +148,18 @@ FactoryBot.define do
   factory :embedded_ansible_network_credential,
           :parent => :embedded_ansible_credential,
           :class  => "ManageIQ::Providers::EmbeddedAnsible::AutomationManager::NetworkCredential"
+
+  factory :embedded_workflows_credential,
+          :parent => :embedded_automation_manager_authentication,
+          :class  => "ManageIQ::Providers::Workflows::AutomationManager::Credential"
+
+  factory :embedded_workflows_scm_credential,
+          :parent => :embedded_workflows_credential,
+          :class  => "ManageIQ::Providers::Workflows::AutomationManager::ScmCredential"
+
+  factory :embedded_workflows_workflow_credential,
+          :parent => :embedded_workflows_credential,
+          :class  => "ManageIQ::Providers::Workflows::AutomationManager::WorkflowCredential"
 
   factory :auth_key_pair_cloud,     :class => "ManageIQ::Providers::CloudManager::AuthKeyPair"
   factory :auth_key_pair_amazon,    :class => "ManageIQ::Providers::Amazon::CloudManager::AuthKeyPair"

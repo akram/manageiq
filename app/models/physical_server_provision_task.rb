@@ -1,5 +1,5 @@
 class PhysicalServerProvisionTask < MiqProvisionTask
-  include_concern 'StateMachine'
+  include StateMachine
 
   def description
     'Provision Physical Server'
@@ -17,7 +17,7 @@ class PhysicalServerProvisionTask < MiqProvisionTask
     PhysicalServer
   end
 
-  def deliver_to_automate
+  def deliver_to_automate(*)
     super('physical_server_provision', my_zone)
   end
 end

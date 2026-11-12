@@ -246,18 +246,9 @@ class VmScan
         return []
       end
 
-      if @vm.requires_storage_for_scan?
-        if @vm.storage.nil?
-          msg = "Vm [#{@vm.path}] is not located on a storage, aborting job [#{job.guid}]."
-          queue_signal(job, {:args => [:abort, msg, "error"]})
-          return []
-        else
-          unless %w[VSAN VMFS NAS NFS NFS41 ISCSI DIR FCP CSVFS NTFS GLUSTERFS].include?(@vm.storage.store_type)
-            msg = "Vm storage type [#{@vm.storage.store_type}] unsupported [#{job.target_id}], aborting job [#{job.guid}]."
-            queue_signal(job, {:args => [:abort, msg, "error"]})
-            return []
-          end
-        end
+      if (msg = @vm.unsupported_reason(:smartstate_analysis))
+        queue_signal(job, {:args => [:abort, msg, "error"]})
+        return []
       end
 
       vm_proxies, = Benchmark.realtime_block(:get_eligible_proxies_for_job__proxies4job) { @vm.proxies4job(job) }

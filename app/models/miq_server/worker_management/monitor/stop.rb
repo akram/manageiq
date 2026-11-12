@@ -14,12 +14,8 @@ module MiqServer::WorkerManagement::Monitor::Stop
   end
 
   def stop_worker(worker, monitor_reason = nil)
-    w = worker.kind_of?(Integer) ? miq_workers.find_by(:id => worker) : worker
-
-    if w.nil?
-      _log.warn("Cannot find Worker <#{w.inspect}>")
-      return
-    end
+    w = find_worker(worker)
+    return if w.nil?
 
     msg = "Stopping #{w.format_full_log_msg}, status [#{w.status}]..."
     _log.info(msg)
@@ -28,17 +24,16 @@ module MiqServer::WorkerManagement::Monitor::Stop
     worker_set_monitor_status(w.pid, :waiting_for_stop)
     worker_set_monitor_reason(w.pid, monitor_reason)
 
+    w.update(:status => MiqWorker::STATUS_STOPPING)
+
     if w.containerized_worker?
       w.stop_container
     elsif w.systemd_worker?
       w.stop_systemd_worker
+    elsif w.pid
+      Process.kill("TERM", w.pid)
     else
-      w.update(:status => MiqWorker::STATUS_STOPPING)
-      if w.pid
-        Process.kill("TERM", w.pid)
-      else
-        _log.error("Failed to stop worker #{w.inspect}; pid is nil")
-      end
+      _log.error("Failed to stop worker #{w.inspect}; pid is nil")
     end
   end
 end

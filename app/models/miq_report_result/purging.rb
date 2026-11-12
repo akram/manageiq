@@ -15,16 +15,18 @@ module MiqReportResult::Purging
     end
 
     def purge_count(mode, value)
-      send("purge_count_by_#{mode}", value)
+      send(:"purge_count_by_#{mode}", value)
     end
 
     def purge(mode, value, window = nil, &block)
-      send("purge_by_#{mode}", value, window, &block)
+      send(:"purge_by_#{mode}", value, window, &block)
     end
 
     def purge_associated_records(ids)
       MiqReportResultDetail.where(:miq_report_result_id => ids).delete_all
-      BinaryBlob.where(:resource_type => name, :resource_id => ids).destroy_all
+      binary_ids = BinaryBlob.where(:resource_type => name, :resource_id => ids).pluck(:id)
+      BinaryBlobPart.where(:binary_blob_id => binary_ids).delete_all
+      BinaryBlob.where(:id => binary_ids).delete_all
     end
 
     private

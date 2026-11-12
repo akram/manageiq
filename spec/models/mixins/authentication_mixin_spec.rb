@@ -1,5 +1,6 @@
 RSpec.describe AuthenticationMixin do
   include Spec::Support::ArelHelper
+  include Spec::Support::SupportsHelper
 
   let(:host)            { FactoryBot.create(:host) }
   let(:invalid_auth)    { FactoryBot.create(:authentication, :resource => host, :status => "Invalid") }
@@ -215,7 +216,7 @@ RSpec.describe AuthenticationMixin do
               Host.authentication_check_schedule
               allow_any_instance_of(Host).to receive(:verify_credentials).and_raise
               msg = MiqQueue.find_by(queue_conditions)
-              msg.delivered(*msg.deliver)
+              msg.deliver_and_process
 
               # attempt 2, 3, 4, 5 should requeue, 6 should NOT
               2.upto(6) do |counter|
@@ -225,7 +226,7 @@ RSpec.describe AuthenticationMixin do
                   expect(msg.args.last).to eq(:attempt => counter)
                   expect(msg.deliver_on).to be_within(0.01).of(time + minutes)
 
-                  msg.delivered(*msg.deliver)
+                  msg.deliver_and_process
                 else
                   expect(MiqQueue).not_to exist(queue_conditions)
                 end
@@ -263,43 +264,6 @@ RSpec.describe AuthenticationMixin do
             @host1.authentication_check_types(:attempt => 1)
           end
         end
-      end
-    end
-
-    context ".validate_credentials_task" do
-      let(:args) { %w(userid password foo) }
-      let(:queue_opts) do
-        {
-          :args        => [*args],
-          :class_name  => "ExtManagementSystem",
-          :method_name => "raw_connect?",
-          :queue_name  => "generic",
-          :role        => "ems_operations",
-          :zone        => 'zone'
-        }
-      end
-      let(:task_opts) do
-        {
-          :action => "Validate EMS Provider Credentials",
-          :userid => 'userid'
-        }
-      end
-
-      it "returns success with no error message" do
-        ok_task = FactoryBot.create(:miq_task, :status => 'Ok')
-        allow(MiqTask).to receive(:generic_action_with_callback).with(task_opts, queue_opts).and_return(1)
-        allow(MiqTask).to receive(:wait_for_taskid).with(1, :timeout => 30).and_return(ok_task)
-
-        expect(ExtManagementSystem.validate_credentials_task(args, 'userid', 'zone')).to eq([true, nil])
-      end
-
-      it "returns failure with an error message" do
-        message = 'Login failed due to a bad username or password.'
-        error_task = FactoryBot.create(:miq_task, :status => 'Error', :message => message)
-        allow(MiqTask).to receive(:generic_action_with_callback).with(task_opts, queue_opts).and_return(1)
-        allow(MiqTask).to receive(:wait_for_taskid).with(1, :timeout => 30).and_return(error_task)
-
-        expect(ExtManagementSystem.validate_credentials_task(args, 'userid', 'zone')).to eq([false, message])
       end
     end
 
@@ -463,7 +427,7 @@ RSpec.describe AuthenticationMixin do
       end
 
       it "Host#authentication_check_types_queue with [:ssh, :default], :remember_host => true is passed down to verify_credentials" do
-        types   = %i(ssh default)
+        types   = %i[ssh default]
         options = {:remember_host => true}
         @host.authentication_check_types_queue(types, options)
         conditions = {:class_name => @host.class.base_class.name, :instance_id => @host.id, :method_name => 'authentication_check_types', :role => @host.authentication_check_role}
@@ -491,7 +455,7 @@ RSpec.describe AuthenticationMixin do
         it "(:save => true) updates status" do
           @host.authentications.first.update(:status => nil) # start unauthorized
           allow(@host).to receive(:verify_credentials).and_return(true)
-          @host.authentication_check(:save => true)
+          @host.authentication_check(:default, :save => true)
           expect(@host.authentication_type(:default).status).to eq("Valid")
           expect(MiqQueue.where(:class_name => "MiqEvent").where(:method_name => "raise_evm_event").count).to eq(1)
         end
@@ -499,7 +463,7 @@ RSpec.describe AuthenticationMixin do
         it "(:save => false) does not update status" do
           @host.authentications.first.update(:status => nil) # start unauthorized
           allow(@host).to receive(:missing_credentials?).and_return(false)
-          @host.authentication_check(:save => false)
+          @host.authentication_check(:default, :save => false)
           expect(@host.authentication_type(:default).status).to be_nil
           expect(MiqQueue.where(:class_name => "MiqEvent").where(:method_name => "raise_evm_event").count).to eq(0)
         end
@@ -732,7 +696,7 @@ RSpec.describe AuthenticationMixin do
         context "#change_password" do
           it "should fail if some param is blank" do
             current_password = ""
-            allow(@ems).to receive(:supports?).with(:change_password) { true }
+            stub_supports(@ems.class, :change_password)
 
             expect { @ems.change_password(current_password, new_password, confirm_password) }
               .to raise_error(MiqException::Error, "Please, fill the current_password and new_password fields.")
@@ -745,7 +709,7 @@ RSpec.describe AuthenticationMixin do
 
           it "should update the provider password" do
             allow(@ems).to receive(:raw_change_password) { true }
-            allow(@ems).to receive(:supports?).with(:change_password) { true }
+            stub_supports(@ems.class, :change_password)
 
             expect(@ems.change_password(current_password, new_password, confirm_password)).to be_truthy
           end

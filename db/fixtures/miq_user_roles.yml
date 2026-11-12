@@ -82,7 +82,6 @@
   - policy_import_export
   - pxe
   - resource_pool
-  - rss
   - security_group
   - service
   - timeline
@@ -130,8 +129,9 @@
   - host_tag
   - host_timeline
   - host_initiator
+  - host_initiator_group
   - miq_task_my_ui
-  - my_settings_default_views
+  - my_settings_view
   - my_settings_time_profiles
   - my_settings_visuals
   - miq_report_run
@@ -164,12 +164,12 @@
   - resource_pool_show
   - resource_pool_show_list
   - resource_pool_tag
-  - rss
   - service_view
   - storage_show
   - storage_show_list
   - storage_perf
   - storage_resource
+  - storage_service
   - storage_tag
   - tasks_view
   - timeline
@@ -230,7 +230,7 @@
   - host_perf
   - host_tag
   - host_timeline
-  - my_settings_default_views
+  - my_settings_view
   - my_settings_time_profiles
   - my_settings_visuals
   - miq_report_run
@@ -261,7 +261,6 @@
   - resource_pool_show
   - resource_pool_show_list
   - resource_pool_tag
-  - rss
   - service_view
   - storage_show
   - storage_show_list
@@ -332,7 +331,7 @@
   - host_check_compliance
   - host_tag
   - miq_task_my_ui
-  - my_settings_default_views
+  - my_settings_view
   - my_settings_time_profiles
   - my_settings_visuals
   - miq_report_run
@@ -358,7 +357,6 @@
   - resource_pool_show
   - resource_pool_show_list
   - resource_pool_tag
-  - rss
   - service_view
   - storage_show
   - storage_show_list
@@ -417,7 +415,7 @@
   - miq_template_show
   - miq_template_show_list
   - miq_template_timeline
-  - my_settings_default_views
+  - my_settings_view
   - my_settings_time_profiles
   - my_settings_visuals
   - physical_rack
@@ -524,7 +522,7 @@
   - host_perf
   - host_tag
   - host_timeline
-  - my_settings_default_views
+  - my_settings_view
   - my_settings_time_profiles
   - my_settings_visuals
   - miq_report_run
@@ -547,7 +545,6 @@
   - resource_pool_show
   - resource_pool_show_list
   - resource_pool_tag
-  - rss
   - service_view
   - storage_delete
   - storage_scan
@@ -581,6 +578,7 @@
   - vm_tag
   - vm_timeline
   - vm_chargeback
+  - vm_terminate
   - sui_services_view
   - sui_vm_details_view
   - sui_vm_html5_console
@@ -618,7 +616,7 @@
   - host_perf
   - host_tag
   - host_timeline
-  - my_settings_default_views
+  - my_settings_view
   - my_settings_time_profiles
   - my_settings_visuals
   - miq_report_run
@@ -645,7 +643,6 @@
   - resource_pool_show
   - resource_pool_show_list
   - resource_pool_tag
-  - rss
   - service_view
   - storage_show
   - storage_show_list
@@ -704,7 +701,7 @@
   - host_tag
   - host_timeline
   - miq_task_my_ui
-  - my_settings_default_views
+  - my_settings_view
   - my_settings_time_profiles
   - my_settings_visuals
   - miq_report_run
@@ -732,7 +729,6 @@
   - resource_pool_show
   - resource_pool_show_list
   - resource_pool_tag
-  - rss
   - service_view
   - storage_show
   - storage_show_list
@@ -792,7 +788,7 @@
   - host_tag
   - host_timeline
   - miq_task_my_ui
-  - my_settings_default_views
+  - my_settings_view
   - my_settings_time_profiles
   - my_settings_visuals
   - miq_report_run
@@ -819,7 +815,6 @@
   - resource_pool_show
   - resource_pool_show_list
   - resource_pool_tag
-  - rss
   - service_view
   - storage_show
   - storage_show_list
@@ -897,7 +892,7 @@
   - miq_request_admin
   - miq_request_view
   - miq_task_my_ui
-  - my_settings_default_views
+  - my_settings_view
   - my_settings_time_profiles
   - my_settings_visuals
   - physical_chassis_view
@@ -909,7 +904,6 @@
   - resource_pool_show
   - resource_pool_show_list
   - resource_pool_tag
-  - rss
   - service_view
   - storage_perf
   - storage_show
@@ -945,6 +939,7 @@
   :settings:
     :restrictions:
       :vms: :user
+      :service_templates: :user
   :miq_product_feature_identifiers:
   - about
   - all_vm_rules
@@ -952,7 +947,7 @@
   - miq_request_admin
   - miq_request_view
   - miq_task_my_ui
-  - my_settings_default_views
+  - my_settings_view
   - my_settings_visuals
   - service_edit
   - service_delete
@@ -1005,6 +1000,7 @@
   - cloud_volume_attach
   - cloud_volume_detach
   - cloud_volume_reload
+  - cloud_volume_refresh
   - cloud_volume_type
   - chargeback
   - chargeback_reports
@@ -1041,8 +1037,14 @@
   - host_initiator_view
   - host_initiator_control
   - host_initiator_new
+  - host_initiator_group_view
+  - host_initiator_group_control
+  - host_initiator_group_new
+  - host_initiator_group_show
+  - host_initiator_group_show_list
+  - host_initiator_group_edit
   - miq_task_my_ui
-  - my_settings_default_views
+  - my_settings_view
   - my_settings_time_profiles
   - my_settings_visuals
   - miq_report_run
@@ -1078,7 +1080,6 @@
   - resource_pool_show
   - resource_pool_show_list
   - resource_pool_tag
-  - rss
   - service_view
   - st_catalog_view
   - st_catalog_edit
@@ -1086,6 +1087,11 @@
   - storage_show_list
   - storage_perf
   - storage_resource
+  - storage_service_view
+  - storage_service_control
+  - storage_service_new
+  - storage_service_show
+  - storage_service_show_list
   - storage_tag
   - tasks_view
   - timeline
@@ -1119,6 +1125,7 @@
   :settings:
     :restrictions:
       :vms: :user_or_group
+      :service_templates: :user_or_group
   :miq_product_feature_identifiers:
   - about
   - all_vm_rules
@@ -1142,7 +1149,7 @@
   - miq_template_snapshot
   - miq_template_tag
   - miq_template_timeline
-  - my_settings_default_views
+  - my_settings_view
   - my_settings_visuals
   - miq_request_admin
   - miq_request_view
@@ -1205,7 +1212,7 @@
   - miq_template_snapshot
   - miq_template_tag
   - miq_template_timeline
-  - my_settings_default_views
+  - my_settings_view
   - my_settings_visuals
   - vm_check_compliance
   - vm_clone
@@ -1302,7 +1309,6 @@
   - rbac_tenant
   - rbac_user
   - resource_pool
-  - rss
   - security_group
   - service
   - timeline
@@ -1359,7 +1365,6 @@
   - rbac_tenant_view
   - rbac_tenant_manage_quotas
   - resource_pool
-  - rss
   - security_group
   - service
   - timeline
@@ -1377,6 +1382,7 @@
   - dashboard
   - chargeback
   - miq_report
+  - my_settings_view
 
 - :name: EvmRole-container_administrator
   :read_only: true
@@ -1416,7 +1422,6 @@
   - instance_view
   - vm_view
   - miq_cloud_networks
-  - ems_container_ad_hoc_metrics
   - monitor_alerts
   - alert_status
   - alert_action
@@ -1460,7 +1465,6 @@
   - container_dashboard
   - instance_view
   - vm_view
-  - ems_container_ad_hoc_metrics
   - monitor_alerts
   - alert_status
   - alert_action
@@ -1557,7 +1561,6 @@
   - rbac_tenant_view
   - rbac_user_view
   - resource_pool_view
-  - rss
   - security_group_view
   - service_view
   - st_catalog_view

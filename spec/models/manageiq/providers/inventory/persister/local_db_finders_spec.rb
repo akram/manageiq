@@ -34,39 +34,39 @@ RSpec.describe ManageIQ::Providers::Inventory::Persister do
 
       lazy_find_network1 = persister.networks.lazy_find(
         {:hardware => lazy_find_hardware1, :description => "public"},
-        {:key     => :hostname,
-         :default => 'default_value_unknown'}
+        :key     => :hostname,
+        :default => 'default_value_unknown'
       )
       lazy_find_network2 = persister.networks.lazy_find(
         {:hardware => lazy_find_hardware2, :description => "public"},
-        {:key     => :hostname,
-         :default => 'default_value_unknown'}
+        :key     => :hostname,
+        :default => 'default_value_unknown'
       )
       lazy_find_network60 = persister.networks.lazy_find(
         {:hardware => lazy_find_hardware60, :description => "public"},
-        {:key     => :hostname,
-         :default => 'default_value_unknown'}
+        :key     => :hostname,
+        :default => 'default_value_unknown'
       )
 
       @vm_data101 = vm_data(101).merge(
         :flavor           => persister.flavors.lazy_find(:ems_ref => flavor_data(1)[:name]),
         :genealogy_parent => persister.miq_templates.lazy_find(:ems_ref => image_data(1)[:ems_ref]),
         :key_pairs        => [persister.auth_key_pairs.lazy_find(:name => key_pair_data(1)[:name])],
-        :location         => lazy_find_network1,
+        :location         => lazy_find_network1
       )
 
       @vm_data102 = vm_data(102).merge(
         :flavor           => persister.flavors.lazy_find(:ems_ref => flavor_data(1)[:name]),
         :genealogy_parent => persister.miq_templates.lazy_find(:ems_ref => image_data(1)[:ems_ref]),
         :key_pairs        => [persister.auth_key_pairs.lazy_find(:name => key_pair_data(1)[:name])],
-        :location         => lazy_find_network2,
+        :location         => lazy_find_network2
       )
 
       @vm_data160 = vm_data(160).merge(
         :flavor           => persister.flavors.lazy_find(:ems_ref => flavor_data(1)[:name]),
         :genealogy_parent => persister.miq_templates.lazy_find(:ems_ref => image_data(1)[:ems_ref]),
         :key_pairs        => [persister.auth_key_pairs.lazy_find(:name => key_pair_data(1)[:name])],
-        :location         => lazy_find_network60,
+        :location         => lazy_find_network60
       )
 
       persister.vms.build(@vm_data101)
@@ -114,7 +114,7 @@ RSpec.describe ManageIQ::Providers::Inventory::Persister do
           ]
         )
       )
-      network2 = persister.networks.find(:hardware => lazy_find_hardware2, :description => "public")
+      network2 = persister.networks.find({:hardware => lazy_find_hardware2, :description => "public"})
       expect(persister.networks.index_proxy.send(:local_db_indexes)[:manager_ref].send(:index).keys).to(
         match_array(
           [
@@ -123,7 +123,7 @@ RSpec.describe ManageIQ::Providers::Inventory::Persister do
           ]
         )
       )
-      network60 = persister.networks.find(:hardware => lazy_find_hardware60, :description => "public")
+      network60 = persister.networks.find({:hardware => lazy_find_hardware60, :description => "public"})
       expect(persister.networks.index_proxy.send(:local_db_indexes)[:manager_ref].send(:index).keys).to(
         match_array(
           [
@@ -158,29 +158,29 @@ RSpec.describe ManageIQ::Providers::Inventory::Persister do
           :stack   => lazy_find_stack_1_11,
           :ems_ref => orchestration_stack_resource_data("1_11_1")[:ems_ref]
         },
-        {:ref => :by_stack_and_ems_ref}
+        :ref => :by_stack_and_ems_ref
       )
       stack_resource_1_11_2 = persister.orchestration_stacks_resources.lazy_find(
         {
           :stack   => lazy_find_stack_1_11,
           :ems_ref => orchestration_stack_resource_data("1_11_2")[:ems_ref]
         },
-        {:ref => :by_stack_and_ems_ref}
+        :ref => :by_stack_and_ems_ref
       )
       stack_resource_1_11_3 = persister.orchestration_stacks_resources.lazy_find(
         {
           :stack   => lazy_find_stack_1_11,
           :ems_ref => orchestration_stack_resource_data("1_11_3")[:ems_ref]
         },
-        {:ref => :by_stack_and_ems_ref}
+        :ref => :by_stack_and_ems_ref
       )
       stack_1_12 = persister.orchestration_stacks_resources.lazy_find(
         {
           :stack   => lazy_find_stack_1_12,
           :ems_ref => orchestration_stack_resource_data("1_12_1")[:ems_ref]
         },
-        {:ref => :by_stack_and_ems_ref,
-         :key => :stack},
+        :ref => :by_stack_and_ems_ref,
+        :key => :stack
       )
 
       @network_port1 = network_port_data(1).merge(
@@ -223,7 +223,7 @@ RSpec.describe ManageIQ::Providers::Inventory::Persister do
           :stack   => lazy_find_stack_1_11,
           :ems_ref => orchestration_stack_resource_data("1_11_3")[:ems_ref]
         },
-        {:ref => :by_stack_and_ems_ref}
+        :ref => :by_stack_and_ems_ref
       ).load
 
       expect(persister.orchestration_stacks_resources.index_proxy.send(:local_db_indexes)[:by_stack_and_ems_ref].send(:index).keys).to(
@@ -258,7 +258,7 @@ RSpec.describe ManageIQ::Providers::Inventory::Persister do
           :stack   => lazy_find_stack_1_11,
           :ems_ref => orchestration_stack_resource_data("1_11_1")[:ems_ref]
         },
-        {:ref => :by_stack_and_ems_ref}
+        :ref => :by_stack_and_ems_ref
       )
 
       # Assert all references are one by one
@@ -275,7 +275,7 @@ RSpec.describe ManageIQ::Providers::Inventory::Persister do
           :stack   => lazy_find_stack_1_11,
           :ems_ref => orchestration_stack_resource_data("1_11_2")[:ems_ref]
         },
-        {:ref => :by_stack_and_ems_ref}
+        :ref => :by_stack_and_ems_ref
       ).load
 
       expect(persister.orchestration_stacks_resources.index_proxy.send(:local_db_indexes)[:by_stack_and_ems_ref].send(:index).keys).to(
@@ -292,7 +292,7 @@ RSpec.describe ManageIQ::Providers::Inventory::Persister do
           :stack   => lazy_find_stack_1_11,
           :ems_ref => orchestration_stack_resource_data("1_11_3")[:ems_ref]
         },
-        {:ref => :by_stack_and_ems_ref}
+        :ref => :by_stack_and_ems_ref
       ).load
 
       expect(persister.orchestration_stacks_resources.index_proxy.send(:local_db_indexes)[:by_stack_and_ems_ref].send(:index).keys).to(
@@ -309,8 +309,8 @@ RSpec.describe ManageIQ::Providers::Inventory::Persister do
           :stack   => lazy_find_stack_1_12,
           :ems_ref => orchestration_stack_resource_data("1_12_1")[:ems_ref]
         },
-        {:ref => :by_stack_and_ems_ref,
-         :key => :stack},
+        :ref => :by_stack_and_ems_ref,
+        :key => :stack
       ).load
 
       expect(persister.orchestration_stacks_resources.index_proxy.send(:local_db_indexes)[:by_stack_and_ems_ref].send(:index).keys).to(
@@ -334,7 +334,7 @@ RSpec.describe ManageIQ::Providers::Inventory::Persister do
 
   context "check secondary indexes on Vms" do
     it "finds Vm by name" do
-      vm1 = persister.vms.lazy_find({:name => vm_data(1)[:name]}, {:ref => :by_name}).load
+      vm1 = persister.vms.lazy_find({:name => vm_data(1)[:name]}, :ref => :by_name).load
       expect(vm1[:ems_ref]).to eq "vm_ems_ref_1"
 
       expect(persister.vms.index_proxy.send(:local_db_indexes)[:by_name].send(:index).keys).to(
@@ -345,7 +345,7 @@ RSpec.describe ManageIQ::Providers::Inventory::Persister do
         )
       )
 
-      vm1 = persister.vms.find({:name => vm_data(1)[:name]}, {:ref => :by_name})
+      vm1 = persister.vms.find({:name => vm_data(1)[:name]}, :ref => :by_name)
       expect(vm1[:ems_ref]).to eq "vm_ems_ref_1"
 
       expect(persister.vms.index_proxy.send(:local_db_indexes)[:by_name].send(:index).keys).to(
@@ -358,7 +358,7 @@ RSpec.describe ManageIQ::Providers::Inventory::Persister do
     end
 
     it "finds Vm by uid_ems and name" do
-      vm1 = persister.vms.lazy_find({:name => vm_data(1)[:name], :uid_ems => vm_data(1)[:uid_ems]}, {:ref => :by_uid_ems_and_name}).load
+      vm1 = persister.vms.lazy_find({:name => vm_data(1)[:name], :uid_ems => vm_data(1)[:uid_ems]}, :ref => :by_uid_ems_and_name).load
       expect(vm1[:ems_ref]).to eq "vm_ems_ref_1"
 
       expect(persister.vms.index_proxy.send(:local_db_indexes)[:by_uid_ems_and_name].send(:index).keys).to(
@@ -369,7 +369,7 @@ RSpec.describe ManageIQ::Providers::Inventory::Persister do
         )
       )
 
-      vm1 = persister.vms.find({:uid_ems => vm_data(1)[:uid_ems], :name => vm_data(1)[:name]}, {:ref => :by_uid_ems_and_name})
+      vm1 = persister.vms.find({:uid_ems => vm_data(1)[:uid_ems], :name => vm_data(1)[:name]}, :ref => :by_uid_ems_and_name)
       expect(vm1[:ems_ref]).to eq "vm_ems_ref_1"
 
       expect(persister.vms.index_proxy.send(:local_db_indexes)[:by_uid_ems_and_name].send(:index).keys).to(
@@ -391,7 +391,7 @@ RSpec.describe ManageIQ::Providers::Inventory::Persister do
       # relations?
       # TODO(lsmola) We should probably assert this sooner? Now we are getting a failure trying to add :device in
       # .includes
-      expect { persister.network_ports.lazy_find({:device => lazy_find_vm1}, {:ref => :by_device}).load }.to(
+      expect { persister.network_ports.lazy_find({:device => lazy_find_vm1}, :ref => :by_device).load }.to(
         raise_error(ActiveRecord::EagerLoadPolymorphicError,
                     "Cannot eagerly load the polymorphic association :device")
       )
@@ -402,7 +402,7 @@ RSpec.describe ManageIQ::Providers::Inventory::Persister do
     it "checks primary index attributes exist" do
       expect do
         persister.add_collection(persister.send(:cloud), :vms, {:manager_ref => %i[ems_ref ems_gref]}, {:without_sti => true})
-      end.to raise_error("Invalid definition of index :manager_ref, there is no attribute :ems_gref on model Vm")
+      end.to raise_error(/Invalid definition of index :manager_ref, there is no attribute :ems_gref on model/)
     end
 
     it "checks secondary index attributes exist" do
@@ -413,31 +413,33 @@ RSpec.describe ManageIQ::Providers::Inventory::Persister do
           {:secondary_refs => {:by_uid_ems_and_name => %i[uid_emsa name]}},
           {:without_sti => true}
         )
-      end.to raise_error("Invalid definition of index :by_uid_ems_and_name, there is no attribute :uid_emsa on model Vm")
+      end.to raise_error(/Invalid definition of index :by_uid_ems_and_name, there is no attribute :uid_emsa on model/)
     end
 
     it "checks relation is allowed in index" do
       persister.add_collection(persister.send(:cloud), :vms) do |builder|
-        builder.add_properties(:model_class    => ::ManageIQ::Providers::CloudManager::Vm,
-                               :secondary_refs => {:by_availability_zone_and_name => %i(availability_zone name)})
+        builder.add_properties(
+          :model_class    => ManageIQ::Providers::CloudManager::Vm,
+          :secondary_refs => {:by_availability_zone_and_name => %i[availability_zone name]}
+        )
       end
 
-      expect(persister.vms.index_proxy.send(:data_indexes).keys).to match_array(%i(manager_ref by_availability_zone_and_name))
+      expect(persister.vms.index_proxy.send(:data_indexes).keys).to match_array(%i[manager_ref by_availability_zone_and_name])
     end
 
     it "checks relation is on model class" do
       expect do
         persister.add_collection(persister.send(:cloud), :vms, {}, {:without_sti => true}) do |builder|
-          builder.add_properties(:secondary_refs => {:by_availability_zone_and_name => %i(availability_zone name)})
+          builder.add_properties(:secondary_refs => {:by_lan_and_name => %i[lan name]})
         end
-      end.to raise_error("Invalid definition of index :by_availability_zone_and_name, there is no attribute :availability_zone on model Vm")
+      end.to raise_error(/Invalid definition of index :by_lan_and_name, there is no attribute :lan on model/)
     end
 
     it "checks we allow any index attributes when we use custom_saving block" do
       persister.add_collection(persister.send(:cloud), :vms, {}, {:without_sti => true}) do |builder|
         builder.add_properties(
           :custom_save_block => ->(ems, _ic) { ems },
-          :manager_ref       => %i(a b c)
+          :manager_ref       => %i[a b c]
         )
       end
 

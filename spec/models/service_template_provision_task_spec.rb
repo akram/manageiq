@@ -16,13 +16,13 @@ RSpec.describe ServiceTemplateProvisionTask do
 
       @request.miq_request_tasks = [@task_0, @task_1, @task_1_1, @task_1_2, @task_2, @task_2_1, @task_3]
       @task_0.miq_request_tasks  = [@task_1, @task_2, @task_3]
-      @task_1.miq_request_task   =  @task_0
+      @task_1.miq_request_task = @task_0
       @task_1.miq_request_tasks  = [@task_1_1, @task_1_2]
       @task_1_1.miq_request_task =  @task_1
       @task_1_2.miq_request_task =  @task_1
       @task_2.miq_request_task   =  @task_0
       @task_2.miq_request_tasks  = [@task_2_1]
-      @task_3.miq_request_task   =  @task_0
+      @task_3.miq_request_task = @task_0
     end
 
     let(:tracking_label) { "r#{@request.id}_service_template_provision_task_#{@task_0.id}" }
@@ -75,7 +75,7 @@ RSpec.describe ServiceTemplateProvisionTask do
       end
     end
 
-    describe "#deliver_to_automate" do
+    describe "#deliver_queue" do
       context "when the state is not active" do
         before do
           @st_zone            = FactoryBot.create(:zone, :name => "service_template_zone")
@@ -87,55 +87,161 @@ RSpec.describe ServiceTemplateProvisionTask do
           allow(@request).to receive(:approved?).and_return(true)
         end
 
-        it "delivers to the queue" do
-          zone                  = FactoryBot.create(:zone, :name => "special")
-          orchestration_manager = FactoryBot.create(:ext_management_system, :zone => zone)
-          @task_0.source        = FactoryBot.create(:service_template_orchestration, :orchestration_manager => orchestration_manager)
-          automate_args         = {
-            :object_type      => 'ServiceTemplateProvisionTask',
-            :object_id        => @task_0.id,
-            :namespace        => 'Service/Provisioning/StateMachines',
-            :class_name       => 'ServiceProvision_Template',
-            :instance_name    => 'clone_to_service',
-            :automate_message => 'create',
-            :attrs            => {'request' => 'clone_to_service', 'Service::Service' => @service.id},
-            :user_id          => @admin.id,
-            :miq_group_id     => @admin.current_group_id,
-            :tenant_id        => @admin.current_tenant.id,
-          }
-          expect(MiqQueue).to receive(:put).with(
-            :class_name     => 'MiqAeEngine',
-            :method_name    => 'deliver',
-            :args           => [automate_args],
-            :role           => 'automate',
-            :zone           => 'special',
-            :tracking_label => tracking_label
-          )
-          @task_0.deliver_to_automate
+        context "with AUTOMATE_DRIVES" do
+          it "delivers to the queue" do
+            zone                  = FactoryBot.create(:zone, :name => "special")
+            orchestration_manager = FactoryBot.create(:ext_management_system, :zone => zone)
+            @task_0.source        = FactoryBot.create(:service_template_orchestration, :orchestration_manager => orchestration_manager, :resource_actions => [FactoryBot.create(:resource_action, :action => "Provision")])
+            automate_args         = {
+              :object_type      => 'ServiceTemplateProvisionTask',
+              :object_id        => @task_0.id,
+              :namespace        => 'Service/Provisioning/StateMachines',
+              :class_name       => 'ServiceProvision_Template',
+              :instance_name    => 'clone_to_service',
+              :automate_message => 'create',
+              :attrs            => {'request' => 'clone_to_service', 'Service::Service' => @service.id},
+              :user_id          => @admin.id,
+              :miq_group_id     => @admin.current_group_id,
+              :tenant_id        => @admin.current_tenant.id,
+            }
+            expect(MiqQueue).to receive(:put).with(
+              :class_name     => 'MiqAeEngine',
+              :method_name    => 'deliver',
+              :args           => [automate_args],
+              :role           => 'automate',
+              :zone           => 'special',
+              :tracking_label => tracking_label
+            )
+            @task_0.deliver_queue
+          end
+        end
+
+        context "with configuration_script_payload" do
+          it "creates a configuration_script instance" do
+            zone               = FactoryBot.create(:zone, :name => "special")
+            automation_manager = FactoryBot.create(:ems_workflows_automation, :zone => zone)
+            payload            = FactoryBot.create(:embedded_workflow, :manager => automation_manager)
+            @task_0.source     = FactoryBot.create(
+              :service_template_generic,
+              :name             => "Provision",
+              :resource_actions => [
+                FactoryBot.create(:resource_action, :action => "Provision", :configuration_script_payload => payload)
+              ]
+            )
+
+            @task_0.update(
+              :options => {
+                :configuration_script_payload_id => payload.id
+              }
+            )
+
+            @task_0.deliver_queue
+
+            expect(@task_0.reload.options.keys).to include(:miq_task_id, :configuration_script_id, :configuration_script_payload_id)
+
+            configuration_script = ConfigurationScript.find(@task_0.options[:configuration_script_id])
+
+            expect(configuration_script).to have_attributes(:manager => automation_manager, :run_by_userid => @admin.userid, :status => "pending", :context => hash_including("Execution" => hash_including("Input" => {"dialog" => {}})))
+            expect(MiqQueue.first).to       have_attributes(
+              :instance_id => configuration_script.id,
+              :class_name  => configuration_script.type,
+              :method_name => "run",
+              :queue_name  => "automate",
+              :role        => "automate",
+              :args        => [hash_including(:object_type => "ServiceTemplateProvisionTask", :object_id => @task_0.id)]
+            )
+          end
+
+          context "with dialog_values" do
+            let(:dialog_values) { {"foo" => "bar"} }
+
+            it "creates a configuration_script instance" do
+              zone               = FactoryBot.create(:zone, :name => "special")
+              automation_manager = FactoryBot.create(:ems_workflows_automation, :zone => zone)
+              payload            = FactoryBot.create(:embedded_workflow, :manager => automation_manager)
+              @task_0.source     = FactoryBot.create(
+                :service_template_generic,
+                :name             => "Provision",
+                :resource_actions => [
+                  FactoryBot.create(:resource_action, :action => "Provision", :configuration_script_payload => payload)
+                ]
+              )
+
+              @task_0.update(
+                :options => {
+                  :dialog                          => dialog_values,
+                  :configuration_script_payload_id => payload.id
+                }
+              )
+
+              @task_0.deliver_queue
+
+              configuration_script = ConfigurationScript.find(@task_0.options[:configuration_script_id])
+
+              expect(configuration_script.context).to include("Execution" => hash_including("Input" => {"dialog" => dialog_values}))
+            end
+          end
+        end
+
+        context "with a configuration_script_payload in options" do
+          it "creates a configuration_script instance" do
+            zone               = FactoryBot.create(:zone, :name => "special")
+            automation_manager = FactoryBot.create(:ems_workflows_automation, :zone => zone)
+            payload            = FactoryBot.create(:embedded_workflow, :manager => automation_manager)
+            @task_1.source     = FactoryBot.create(
+              :service_template_generic,
+              :name             => "Provision",
+              :resource_actions => [
+                FactoryBot.create(:resource_action, :action => "Provision", :configuration_script_payload => payload)
+              ]
+            )
+
+            @task_1_1.update(
+              :options => {
+                :configuration_script_payload_id => payload.id,
+                :parent_task_id                  => @task_1.id
+              }
+            )
+            @task_1_1.deliver_queue
+
+            expect(@task_1_1.reload.options.keys).to include(:miq_task_id, :configuration_script_id, :configuration_script_payload_id)
+
+            configuration_script = ConfigurationScript.find(@task_1_1.options[:configuration_script_id])
+
+            expect(configuration_script).to have_attributes(:manager => automation_manager, :run_by_userid => @admin.userid, :status => "pending")
+            expect(MiqQueue.first).to       have_attributes(
+              :instance_id => configuration_script.id,
+              :class_name  => configuration_script.type,
+              :method_name => "run",
+              :queue_name  => "automate",
+              :role        => "automate",
+              :args        => [hash_including(:object_type => "ServiceTemplateProvisionTask", :object_id => @task_1_1.id)]
+            )
+          end
         end
 
         it "sets queue item to zone specified in dialog" do
           zone = FactoryBot.create(:zone, :name => 'dialog_zone')
           @task_0.update(:options => {:dialog => {"dialog_zone" => zone.name}})
           expect(MiqQueue).to receive(:put).with(hash_including(:zone => zone.name))
-          @task_0.deliver_to_automate
+          @task_0.deliver_queue
         end
 
         it "sets queue item to zone specified in service template without dialog" do
           expect(MiqQueue).to receive(:put).with(hash_including(:zone => @st_zone.name))
-          @task_0.deliver_to_automate
+          @task_0.deliver_queue
         end
 
         it "sets queue item to server's zone if not specified in dialog and service template" do
           @task_0.source.update(:zone => nil)
           expect(MiqQueue).to receive(:put).with(hash_including(:zone => 'a_server_zone'))
-          @task_0.deliver_to_automate
+          @task_0.deliver_queue
         end
       end
 
       it "raises an error when the state is already active" do
         @task_0.state = 'active'
-        expect { @task_0.deliver_to_automate }.to raise_error('Service_Template_Provisioning request is already being processed')
+        expect { @task_0.deliver_queue }.to raise_error('Service_Template_Provisioning request is already being processed')
       end
     end
 
@@ -149,16 +255,17 @@ RSpec.describe ServiceTemplateProvisionTask do
         }
         allow(@request).to receive(:approved?).and_return(true)
         allow(MiqServer).to receive(:my_zone).and_return('a_zone')
-        expect(MiqQueue).to receive(:put).with(
-          :class_name     => 'ServiceTemplateProvisionTask',
-          :instance_id    => @task_0.id,
-          :method_name    => 'execute',
-          :role           => 'ems_operations',
-          :queue_name     => nil,
-          :zone           => 'a_zone',
-          :tracking_label => tracking_label,
-          :deliver_on     => nil,
-          :miq_callback   => miq_callback)
+        expect(MiqQueue).to receive(:put).with({
+                                                 :class_name     => 'ServiceTemplateProvisionTask',
+                                                 :instance_id    => @task_0.id,
+                                                 :method_name    => 'execute',
+                                                 :role           => 'ems_operations',
+                                                 :queue_name     => nil,
+                                                 :zone           => 'a_zone',
+                                                 :tracking_label => tracking_label,
+                                                 :deliver_on     => nil,
+                                                 :miq_callback   => miq_callback
+                                               })
         @task_0.execute_queue
       end
 

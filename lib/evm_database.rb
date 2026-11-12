@@ -1,3 +1,5 @@
+require "benchmark"
+
 class EvmDatabase
   include Vmdb::Logging
 
@@ -30,8 +32,8 @@ class EvmDatabase
     ChargeableField
     Currency
     ChargebackRate
+    ServiceTemplateCatalog
 
-    BlacklistedEvent
     Classification
     CustomizationTemplate
     Dialog
@@ -58,15 +60,30 @@ class EvmDatabase
     Vmdb::Plugins.flat_map { |p| p.try(:seedable_classes) }.compact
   end
 
+  class << self
+    attr_accessor :seeding
+    alias seeding? seeding
+
+    def with_seed
+      self.seeding = true
+      yield
+    ensure
+      self.seeding = false
+    end
+  end
+  self.seeding = false
+
   def self.seed(classes = nil, exclude_list = [])
-    classes ||= seedable_classes
-    classes  -= exclude_list
-    classes   = classes.collect(&:constantize)
+    with_seed do
+      classes ||= seedable_classes
+      classes  -= exclude_list
+      classes   = classes.collect(&:constantize)
 
-    invalid = classes.reject { |c| c.respond_to?(:seed) }
-    raise ArgumentError, "class(es) #{invalid.join(", ")} do not respond to seed" if invalid.any?
+      invalid = classes.reject { |c| c.respond_to?(:seed) }
+      raise ArgumentError, "class(es) #{invalid.join(", ")} do not respond to seed" if invalid.any?
 
-    seed_classes(classes)
+      seed_classes(classes)
+    end
   end
 
   def self.seed_primordial
@@ -80,6 +97,7 @@ class EvmDatabase
 
   def self.seed_rest
     return if skip_seeding?
+
     seed(OTHER_SEEDABLE_CLASSES + seedable_plugin_classes)
   end
 
@@ -133,7 +151,7 @@ class EvmDatabase
   private_class_method :seed_classes
 
   def self.host
-    (ActiveRecord::Base.configurations[ENV['RAILS_ENV']] || {})['host']
+    ActiveRecord::Base.configurations.find_db_config(Rails.env).host
   end
 
   def self.local?
@@ -169,7 +187,7 @@ class EvmDatabase
     require 'manageiq-postgres_ha_admin'
     ManageIQ::PostgresHaAdmin.logger = Vmdb.logger
 
-    monitor ||= ManageIQ::PostgresHaAdmin::FailoverMonitor.new(Rails.root.join("config", "ha_admin.yml"))
+    monitor ||= ManageIQ::PostgresHaAdmin::FailoverMonitor.new(Rails.root.join("config/ha_admin.yml"))
 
     configure_rails_handler(monitor)
     configure_logical_replication_handlers(monitor)
@@ -179,12 +197,11 @@ class EvmDatabase
   end
 
   def self.configure_rails_handler(monitor)
-    file_path = Rails.root.join("config", "database.yml")
+    file_path = Rails.root.join("config/database.yml")
     rails_handler = ManageIQ::PostgresHaAdmin::RailsConfigHandler.new(:file_path => file_path, :environment => Rails.env)
     _log.info("Configuring database failover for #{file_path}'s #{Rails.env} environment")
 
-    rails_handler.before_failover { LinuxAdmin::Service.new("evmserverd").stop }
-    rails_handler.after_failover do
+    rails_handler.after_failover do |_new_conn_info|
       # refresh the rails connection info after the config handler changed database.yml
       begin
         ActiveRecord::Base.remove_connection
@@ -194,7 +211,6 @@ class EvmDatabase
       ActiveRecord::Base.establish_connection(Rails.application.config.database_configuration[Rails.env])
 
       raise_server_event("db_failover_executed")
-      LinuxAdmin::Service.new("evmserverd").restart
     end
 
     monitor.add_handler(rails_handler)

@@ -1,6 +1,6 @@
 RSpec.describe MeteringContainerImage do
   include Spec::Support::ChargebackHelper
-  let(:base_options) { {:interval_size => 2, :end_interval_offset => 0, :ext_options => {:tz => 'UTC'} } }
+  let(:base_options) { {:interval_size => 2, :end_interval_offset => 0, :ext_options => {:tz => 'UTC'}} }
   let(:hourly_rate)       { 0.01 }
   let(:count_hourly_rate) { 1.00 }
   let(:starting_date) { Time.parse('2012-09-01 23:59:59Z').utc }
@@ -14,14 +14,13 @@ RSpec.describe MeteringContainerImage do
   let(:metric_rollup_params) { {:parent_ems_id => ems.id, :tag_names => ""} }
 
   before do
-    MiqRegion.seed
     ChargebackRateDetailMeasure.seed
     ChargeableField.seed
     ChargebackRate.seed
 
     MiqEnterprise.seed
 
-    EvmSpecHelper.create_guid_miq_server_zone
+    EvmSpecHelper.local_miq_server
     @node = FactoryBot.create(:container_node, :name => "node")
     @label = FactoryBot.build(:custom_attribute, :name => "version/1.2/_label-1", :value => "test/1.0.0  rc_2", :section => 'docker_labels')
     @image = FactoryBot.create(:container_image, :ext_management_system => ems, :docker_labels => [@label])

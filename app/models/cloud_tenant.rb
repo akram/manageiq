@@ -1,6 +1,6 @@
 class CloudTenant < ApplicationRecord
   include CloudTenancyMixin
-  TENANT_MAPPING_ASSOCIATIONS = %i(vms_and_templates).freeze
+  TENANT_MAPPING_ASSOCIATIONS = %i[vms_and_templates].freeze
 
   include NewWithTypeStiMixin
   include CustomActionsMixin
@@ -187,7 +187,6 @@ class CloudTenant < ApplicationRecord
   end
 
   def self.tenant_joins_clause(scope)
-    scope.includes(:source_tenant, :ext_management_system)
-         .references(:source_tenant, :ext_management_system)
+    scope.left_outer_joins(:source_tenant, :ext_management_system)
   end
 end

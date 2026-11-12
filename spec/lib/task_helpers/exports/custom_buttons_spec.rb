@@ -70,7 +70,7 @@ RSpec.describe TaskHelpers::Exports::CustomButtons do
       TaskHelpers::Exports::CustomButtons.new.export(:directory => export_dir)
       file_contents = File.read("#{export_dir}/CustomButtons.yaml")
 
-      expect(YAML.safe_load(file_contents, [Symbol])).to contain_exactly(*custom_button_export_test)
+      expect(YAML.safe_load(file_contents, :permitted_classes => [Symbol])).to contain_exactly(*custom_button_export_test)
       expect(Dir[File.join(export_dir, '**', '*')].count { |file| File.file?(file) }).to eq(1)
     end
   end
@@ -164,7 +164,7 @@ RSpec.describe TaskHelpers::Exports::CustomButtons do
       TaskHelpers::Exports::CustomButtons.new.export(:directory => export_dir)
       file_contents = File.read("#{export_dir}/CustomButtons.yaml")
 
-      expect(YAML.safe_load(file_contents, [Symbol])).to contain_exactly(*multi_custom_button_export_test)
+      expect(YAML.safe_load(file_contents, :permitted_classes => [Symbol])).to contain_exactly(*multi_custom_button_export_test)
       expect(Dir[File.join(export_dir, '**', '*')].count { |file| File.file?(file) }).to eq(1)
     end
   end
@@ -236,6 +236,7 @@ RSpec.describe TaskHelpers::Exports::CustomButtons do
                     "ae_attributes"               => {},
                     "configuration_template_id"   => nil,
                     "configuration_template_type" => nil,
+                    "configuration_script_id"     => nil,
                     "resource_type"               => "CustomButton"
                   }
                 }]
@@ -270,6 +271,7 @@ RSpec.describe TaskHelpers::Exports::CustomButtons do
                 "ae_attributes"               => {},
                 "configuration_template_id"   => nil,
                 "configuration_template_type" => nil,
+                "configuration_script_id"     => nil,
                 "dialog_label"                => "label1"
               }
             }]
@@ -282,7 +284,7 @@ RSpec.describe TaskHelpers::Exports::CustomButtons do
       TaskHelpers::Exports::CustomButtons.new.export(:directory => export_dir)
       file_contents = File.read("#{export_dir}/CustomButtons.yaml")
 
-      expect(YAML.safe_load(file_contents, [Symbol])).to contain_exactly(*custom_button_with_dialogs_export_test)
+      expect(YAML.safe_load(file_contents, :permitted_classes => [Symbol])).to contain_exactly(*custom_button_with_dialogs_export_test)
       expect(Dir[File.join(export_dir, '**', '*')].count { |file| File.file?(file) }).to eq(1)
     end
   end

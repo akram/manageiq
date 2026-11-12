@@ -1,3 +1,5 @@
+# rubocop:disable Rails/Output
+
 require 'fileutils'
 require 'pathname'
 
@@ -9,37 +11,42 @@ module ManageIQ
       # determine plugin root dir. Assume we are called from a 'bin/' script in the plugin root
       plugin_root ||= Pathname.new(caller_locations.last.absolute_path).dirname.parent
 
-      manageiq_plugin_update(plugin_root)
+      manageiq_plugin_update(plugin_root, force_bundle_update: false)
     end
 
-    def self.manageiq_plugin_update(plugin_root = nil)
+    def self.manageiq_plugin_update(plugin_root = nil, force_bundle_update: true)
       # determine plugin root dir. Assume we are called from a 'bin/' script in the plugin root
       plugin_root ||= Pathname.new(caller_locations.last.absolute_path).dirname.parent
 
-      setup_gemfile_lock if ENV["CI"]
-      install_bundler(plugin_root)
-      bundle_update(plugin_root)
-
       ensure_config_files
 
-      create_database_user if ENV["CI"]
+      puts "== Installing dependencies =="
 
-      setup_test_environment(:task_prefix => 'app:', :root => plugin_root) unless ENV["SKIP_TEST_RESET"]
+      install_bundler(plugin_root)
+      bundle_config(plugin_root)
+      bundle_update(plugin_root, force: force_bundle_update)
 
-      prepare_codeclimate_test_reporter(plugin_root) if ENV["CI"]
+      unless skip_database_reset?
+        # Update the local development database
+        create_database(plugin_root)
+        migrate_database(plugin_root)
+        seed_database(plugin_root)
+      end
+
+      setup_test_environment(:task_prefix => 'app:', :root => plugin_root) unless skip_test_reset?
     end
 
     def self.ensure_config_files
       config_files = {
-        "certs/v2_key.dev"           => "certs/v2_key",
-        "config/cable.yml.sample"    => "config/cable.yml",
-        "config/database.pg.yml"     => "config/database.yml",
-        "config/messaging.kafka.yml" => "config/messaging.yml",
+        "certs/v2_key.dev"        => "certs/v2_key",
+        "config/cable.yml.sample" => "config/cable.yml",
+        "config/database.pg.yml"  => "config/database.yml"
       }
 
       config_files.each do |source, dest|
         file = APP_ROOT.join(dest)
         next if file.exist?
+
         puts "Copying #{file} from template..."
         FileUtils.cp(APP_ROOT.join(source), file)
       end
@@ -58,49 +65,41 @@ module ManageIQ
     end
 
     def self.install_bundler(root = APP_ROOT)
-      system!("echo 'gem: --no-ri --no-rdoc --no-document' > ~/.gemrc") if ENV['TRAVIS']
-      system!("gem install bundler -v '#{bundler_version}' --conservative") unless ENV["GITHUB_ACTIONS"]
-      system!("bundle config path #{root.join('vendor/bundle').expand_path}", :chdir => root) if ENV["TRAVIS"]
+      # We can avoid installing bundler on two conditions:
+      #   * The bundle command exists
+      #   * Using it to retrieve the bundle's information on the bundler version is successful.
+      #     This means the dependency tree is fully resolved and the currently active bundler's
+      #     bundle executable is in the bundle and matches the dependency requirements.
+      return if system("which bundle", [:out, :err] => "/dev/null") && system("bundle info bundler", [:out, :err] => "/dev/null", :chdir => root)
 
-      # For nokogiri 1.13.0+, native gem support was added, allowing pre-compiled binaries to be used.
-      # This provides faster and more reliable installation but assumes you have total control of the installation environment.
-      # On travis, or other CI's, we may not be able to easily install the various dev dependencies it expects.  We'll force
-      # travis to compile these extensions from source until we can use these native gems.
-      # See https://nokogiri.org/CHANGELOG.html#1130-2022-01-06
-      system!("bundle config set force_ruby_platform true") if ENV["TRAVIS"]
+      system!("gem install bundler -v '#{bundler_version}' --conservative", :chdir => root)
     end
 
-    def self.setup_gemfile_lock
-      # Gemfile.lock.release does not apply to the master branch nor to a PR to the master branch
-      return if ENV["TRAVIS_BRANCH"] == "master" || # Travis master branch OR PR to master branch
-        ENV["GITHUB_BASE_REF"] == "master" ||       # GHA PR to master branch
-        ENV["GITHUB_REF_NAME"] == "master"          # GHA master branch
-
-      raise "Missing Gemfile.lock.release" unless APP_ROOT.join("Gemfile.lock.release").file?
-      FileUtils.cp(APP_ROOT.join("Gemfile.lock.release"), APP_ROOT.join("Gemfile.lock"))
+    def self.bundle_config(root = APP_ROOT)
+      system!("bundle config set --local build.rugged --with-ssh", :chdir => root)
     end
 
-    def self.bundle_update(root = APP_ROOT)
-      system!("bundle update --jobs=3", :chdir => root)
-      return unless ENV["CI"]
-
-      lockfile_contents = File.read(root.join("Gemfile.lock"))
-      puts "===== Begin Gemfile.lock =====\n\n#{lockfile_contents}\n\n===== End Gemfile.lock ====="
+    def self.bundle_update(root = APP_ROOT, force: false)
+      if !force && system("bundle check", [:out, :err] => "/dev/null", :chdir => root)
+        puts "== Bundle up to date... Skipping bundle update =="
+      else
+        system!("bundle update --jobs=3", :chdir => root)
+      end
     end
 
-    def self.create_database
-      puts "\n== Updating database =="
-      run_rake_task("db:create")
+    def self.create_database(root = APP_ROOT)
+      puts "\n== Creating database =="
+      run_rake_task("db:create", :root => root)
     end
 
-    def self.migrate_database
+    def self.migrate_database(root = APP_ROOT)
       puts "\n== Migrating database =="
-      run_rake_task("db:migrate")
+      run_rake_task("db:migrate", :root => root)
     end
 
-    def self.seed_database
+    def self.seed_database(root = APP_ROOT)
       puts "\n== Seeding database =="
-      run_rake_task("db:seed")
+      run_rake_task("db:seed", :root => root)
     end
 
     def self.setup_test_environment(task_prefix: '', root: APP_ROOT)
@@ -121,20 +120,6 @@ module ManageIQ
     def self.clear_logs_and_temp
       puts "\n== Removing old logs and tempfiles =="
       run_rake_task("log:clear tmp:clear")
-    end
-
-    def self.create_database_user
-      return if ENV["GITHUB_ACTIONS"]
-
-      system!(%q(psql -c "CREATE USER root SUPERUSER PASSWORD 'smartvm';" -U postgres))
-    end
-
-    def self.prepare_codeclimate_test_reporter(root = APP_ROOT)
-      return if ENV["GITHUB_ACTIONS"]
-
-      system!("curl -L https://codeclimate.com/downloads/test-reporter/test-reporter-latest-linux-amd64 > ./cc-test-reporter", :chdir => root)
-      system!("chmod +x ./cc-test-reporter", :chdir => root)
-      system!("./cc-test-reporter before-build", :chdir => root)
     end
 
     def self.update_ui
@@ -161,5 +146,19 @@ module ManageIQ
       options[:chdir] ||= APP_ROOT
       system(*args, options) || abort("\n== Command #{args} failed in #{options[:chdir]} ==")
     end
+
+    def self.ci?
+      ENV.fetch("CI", nil) == "true"
+    end
+
+    def self.skip_database_reset?
+      ENV.key?("SKIP_DATABASE_RESET") ? ENV.fetch("SKIP_DATABASE_RESET") == "true" : ci?
+    end
+
+    def self.skip_test_reset?
+      ENV.fetch("SKIP_TEST_RESET", nil) == "true"
+    end
   end
 end
+
+# rubocop:enable Rails/Output

@@ -2,7 +2,7 @@ RSpec.describe Container do
   context "::Purging" do
     context ".purge_queue" do
       before do
-        EvmSpecHelper.create_guid_miq_server_zone
+        EvmSpecHelper.local_miq_server
       end
       let(:purge_time) { (Time.zone.now + 10).round }
 
@@ -41,6 +41,14 @@ RSpec.describe Container do
       it "with a window" do
         described_class.purge(deleted_date, 1)
         assert_unpurged_ids(@new_container.id)
+      end
+
+      it "purges associated rows" do
+        @old_container.container_env_vars << FactoryBot.create(:container_env_var)
+        @old_container.container_port_configs << FactoryBot.create(:container_port_config)
+        described_class.purge(deleted_date)
+        expect(@old_container.container_env_vars.count).to eq(0)
+        expect(@old_container.container_port_configs.count).to eq(0)
       end
     end
   end

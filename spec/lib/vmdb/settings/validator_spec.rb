@@ -24,14 +24,7 @@ RSpec.describe Vmdb::Settings::Validator do
     {:webservices => {:timeout => 123}},   true,
     {:webservices => {:timeout => "xxx"}}, false,
 
-    {:authentication => {:mode => "ldaps"}},                     false,
-    {:authentication => {:mode => "ldaps", :ldaphost => "foo"}}, true,
     {:authentication => {:mode => "xxx"}},                       false,
-
-    {:authentication => {:mode => "ldap", :ldaphost => "foo"}}, true,
-    {:authentication => {:mode => "ldap", :ldaphost => nil}},   false,
-    {:authentication => {:mode => "ldap", :ldaphost => ""}},    false,
-    {:authentication => {:mode => "ldap"}},                     false,
 
     {:log => {:level => "debug"}}, true,
     {:log => {:level => "xxx"}},   false,
@@ -155,6 +148,20 @@ RSpec.describe Vmdb::Settings::Validator do
       result, errors = subject.validate
       expect(result).to eql(true)
       expect(errors.empty?).to eql(true)
+    end
+
+    it "changing count is valid for a scalable worker" do
+      stub_settings_merge(:workers => {:worker_base => {:queue_worker_base => {:generic_worker => {:count => 4}}}})
+      result, errors = subject.validate
+      expect(result).to be_truthy
+      expect(errors.empty?).to eql(true)
+    end
+
+    it "changing count is invalid for a non-scalable worker" do
+      stub_settings_merge(:workers => {:worker_base => {:queue_worker_base => {:event_handler => {:count => 2}}}})
+      result, errors = subject.validate
+      expect(result).to be_falsey
+      expect(errors).to include("workers-count" => "event_handler: count: 2 exceeds maximum worker count: 1")
     end
   end
 end

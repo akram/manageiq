@@ -21,11 +21,15 @@ module EvmSpecHelper
     end
   end
 
-  def self.assign_embedded_ansible_role(miq_server = nil)
+  def self.assign_role(role_name, miq_server: nil, create_options: {})
     MiqRegion.seed
     miq_server ||= local_miq_server
-    role = ServerRole.find_by(:name => "embedded_ansible") || FactoryBot.create(:server_role, :name => 'embedded_ansible', :max_concurrent => 0)
+    role = ServerRole.find_by(:name => role_name) || FactoryBot.create(:server_role, :name => role_name, **create_options)
     miq_server.assign_role(role).update(:active => true)
+  end
+
+  def self.assign_embedded_ansible_role(miq_server = nil)
+    assign_role("embedded_ansible", :miq_server => miq_server, :create_options => {:max_concurrent => 0})
   end
 
   # Clear all EVM caches
@@ -34,12 +38,16 @@ module EvmSpecHelper
     yield if block_given?
   ensure
     Module.clear_all_cache_with_timeout if Module.respond_to?(:clear_all_cache_with_timeout)
+    TokenStore.token_caches.clear if defined?(TokenStore)
 
-    clear_instance_variables(MiqEnvironment::Command)
+    clear_instance_variables(MiqEnvironment::Command) if defined?(MiqEnvironment::Command)
     clear_instance_variable(MiqProductFeature, :@feature_cache) if defined?(MiqProductFeature)
     clear_instance_variable(MiqProductFeature, :@obj_cache) if defined?(MiqProductFeature)
+    clear_instance_variable(MiqQueue, :@messaging_client) if defined?(MiqQueue)
     clear_instance_variable(BottleneckEvent, :@event_definitions) if defined?(BottleneckEvent)
     clear_instance_variable(Tenant, :@root_tenant) if defined?(Tenant)
+
+    EventStream.clear_event_groups_cache if defined?(EventStream)
 
     MiqWorker.my_guid = nil
 
@@ -83,6 +91,7 @@ module EvmSpecHelper
     if instance.kind_of?(ActiveRecord::Base) || (instance.kind_of?(Class) && instance < ActiveRecord::Base)
       raise "instances variables should not be cleared from ActiveRecord objects"
     end
+
     # Don't clear the rspec-mocks instance variables
     ivars = instance.instance_variables - [:@mock_proxy, :@__recorder]
     ivars.each { |ivar| clear_instance_variable(instance, ivar) }
@@ -111,7 +120,7 @@ module EvmSpecHelper
   end
 
   def self.remote_miq_server(attrs = {})
-    Tenant.root_tenant || Tenant.create!(:use_config_for_attributes => false)
+    Tenant.root_tenant || Tenant.seed
 
     FactoryBot.create(:miq_server, attrs)
   end

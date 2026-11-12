@@ -7,6 +7,8 @@ module ManageIQ
 
     class_option :path, :type => :string, :default => 'plugins',
                  :desc => "Create plugin at given path"
+    class_option :js, :type => :boolean, :default => false,
+                 :desc => "Enable JavaScript in the plugin"
 
     def self.namespace
       # Thor has its own version of snake_case, which doesn't account for acronyms
@@ -23,29 +25,29 @@ module ManageIQ
 
     def create_plugin_files
       template "%plugin_name%.gemspec"
-      template ".codeclimate.yml"
+      template ".github/workflows/ci.yaml"
       template ".gitignore"
       template ".rspec"
       template ".rspec_ci"
       template ".rubocop.yml"
-      template ".rubocop_cc.yml"
       template ".rubocop_local.yml", :skip => true
-      template ".travis.yml"
       template ".whitesource"
       template ".yamllint"
+      template "AGENTS.md"
       template "Gemfile"
       template "LICENSE.txt"
       template "Rakefile"
       template "README.md"
-      template "bin/ci/after_script"
+      template "renovate.json"
       template "bin/rails"
       template "bin/setup"
       template "bin/update"
-      chmod "bin", 0755 & ~File.umask, :verbose => false
+      template "bin/before_install"
+      chmod "bin", 0o755 & ~File.umask, :verbose => false
       empty_directory_with_keep_file "bundler.d"
       template "config/secrets.defaults.yml"
       template "config/settings.yml"
-      template "lib/%plugin_name%.rb"
+      template "lib/%plugin_path%.rb"
       template "lib/%plugin_path%/engine.rb"
       template "lib/%plugin_path%/version.rb"
       template "lib/tasks/README.md"
@@ -54,6 +56,27 @@ module ManageIQ
       empty_directory "spec/factories"
       empty_directory "spec/support"
       template "spec/spec_helper.rb"
+
+      if options[:js]
+        gitignore = <<~GITIGNORE
+
+          /node_modules/
+          /.pnp.*
+          /.yarn/*
+          !/.yarn/patches
+          !/.yarn/plugins
+          !/.yarn/releases
+          !/.yarn/sdks
+          !/.yarn/versions
+        GITIGNORE
+
+        inject_into_file ".gitignore", gitignore, :after => "/spec/manageiq\n"
+        template ".gitattributes"
+        template ".yarnrc.yml"
+        template "package.json"
+        template "yarn.lock"
+        run "yarn set version stable"
+      end
     end
 
     def insert_manageiq_gem
@@ -63,6 +86,16 @@ module ManageIQ
         end
       GEMFILE
       inject_into_file Rails.root.join('Gemfile'), "\n#{data}\n", :after => "### providers\n"
+
+      bundler_d_dir       = Rails.root.join("bundler.d")
+      plugin_overrides_rb = bundler_d_dir.glob("*.rb").first || bundler_d_dir.join("plugins.rb")
+
+      data = "override_gem \"#{plugin_name}\", :path => \"#{destination_root}\"\n"
+      if plugin_overrides_rb.exist?
+        inject_into_file plugin_overrides_rb, data
+      else
+        plugin_overrides_rb.write(data)
+      end
     end
 
     private
@@ -103,6 +136,34 @@ module ManageIQ
     #   # => "My Helper plugin for ManageIQ."
     def plugin_description
       @plugin_description ||= "#{plugin_short_name.titleize} plugin for #{Vmdb::Appliance.PRODUCT_NAME}."
+    end
+
+    def ruby_versions
+      @ruby_versions ||= core_ci_yaml.dig("jobs", "ci", "strategy", "matrix", "ruby-version").to_a
+    end
+
+    def core_ci_yaml
+      @core_ci_yaml ||= YAML.load_file(core_ci_yaml_path)
+    end
+
+    def core_ci_yaml_path
+      Rails.root.join(".github/workflows/ci.yaml")
+    end
+
+    def node_version
+      @node_version ||= package_json.dig("engines", "node")
+    end
+
+    def npm_version
+      @npm_version ||= package_json.dig("engines", "npm")
+    end
+
+    def package_json
+      @package_json ||= JSON.parse(File.read(ui_classic_package_json_path))
+    end
+
+    def ui_classic_package_json_path
+      ManageIQ::UI::Classic::Engine.root.join("package.json")
     end
 
     def empty_directory_with_keep_file(destination, config = {})
@@ -172,7 +233,7 @@ module ManageIQ
       with_output_buffer { value = yield(*args) }.presence || value
     end
 
-    def with_output_buffer(buf = nil) #:nodoc:
+    def with_output_buffer(buf = nil) # :nodoc:
       unless buf
         buf = ""
         if output_buffer && output_buffer.respond_to?(:encoding)

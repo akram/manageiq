@@ -1,6 +1,4 @@
 class MiqUiWorker < MiqWorker
-  require_nested :Runner
-
   self.required_roles = ['user_interface']
 
   STARTING_PORT = 3000
@@ -23,6 +21,16 @@ class MiqUiWorker < MiqWorker
   def self.preload_for_worker_role
     super
     Api::ApiConfig.collections.each { |_k, v| v.klass.try(:constantize).try(:descendants) }
+
+    # There is a race condition between const_missing and singleton which can occur
+    # when one thread is holding the singleton lock and loading a constant while
+    # another thread is holding the signleton lock and waiting to load a different
+    # constant.
+    #
+    # As a workaround preload all classes which are Singletons from a single thread
+    # prior to booting the puma workers.
+    ApplicationHelper::Toolbar::Base.instance
+    Menu::Manager.instance
   end
 
   def container_port
@@ -41,11 +49,11 @@ class MiqUiWorker < MiqWorker
     super
 
     definition[:spec][:template][:spec][:containers].first[:volumeMounts] << {:name => "ui-httpd-configs", :mountPath => "/etc/httpd/conf.d"}
-    definition[:spec][:template][:spec][:volumes] << {:name => "ui-httpd-configs", :configMap => {:name => "ui-httpd-configs", :defaultMode => 420}}
+    definition[:spec][:template][:spec][:volumes] << {:name => "ui-httpd-configs", :configMap => {:name => "ui-httpd-configs", :defaultMode => 0o644}}
 
     if ENV["UI_SSL_SECRET_NAME"].present?
       definition[:spec][:template][:spec][:containers].first[:volumeMounts] << {:name => "ui-httpd-ssl", :mountPath => "/etc/pki/tls"}
-      definition[:spec][:template][:spec][:volumes] << {:name => "ui-httpd-ssl", :secret => {:secretName => ENV["UI_SSL_SECRET_NAME"], :items => [{:key => "ui_crt", :path => "certs/server.crt"}, {:key => "ui_key", :path => "private/server.key"}], :defaultMode => 400}}
+      definition[:spec][:template][:spec][:volumes] << {:name => "ui-httpd-ssl", :secret => {:secretName => ENV["UI_SSL_SECRET_NAME"], :items => [{:key => "ui_crt", :path => "certs/server.crt"}, {:key => "ui_key", :path => "private/server.key"}], :defaultMode => 0o440}}
     end
   end
 end

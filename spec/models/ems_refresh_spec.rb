@@ -1,15 +1,23 @@
 require "inventory_refresh"
 
 RSpec.describe EmsRefresh do
+  include Spec::Support::SupportsHelper
+
   context ".queue_refresh" do
     before do
-      _guid, _server, zone = EvmSpecHelper.create_guid_miq_server_zone
+      zone = EvmSpecHelper.local_miq_server.zone
       @ems = FactoryBot.create(:ems_vmware, :zone => zone)
     end
 
     it "with Ems" do
       target = @ems
       queue_refresh_and_assert_queue_item(target, [target])
+    end
+
+    it "with Ems that doesn't support refresh_ems" do
+      stub_supports_not(@ems, :refresh_ems)
+      described_class.queue_refresh(@ems)
+      expect(MiqQueue.count).to be_zero
     end
 
     it "with InventoryRefresh::Target" do
@@ -48,13 +56,13 @@ RSpec.describe EmsRefresh do
 
   context "stopping targets unbounded growth" do
     before do
-      _guid, _server, zone = EvmSpecHelper.create_guid_miq_server_zone
+      zone = EvmSpecHelper.local_miq_server.zone
       @ems = FactoryBot.create(:ems_vmware, :zone => zone)
     end
 
     let(:targets) do
       targets = []
-      (0..996).each do |i|
+      997.times do |i|
         targets << InventoryRefresh::Target.load(
           :manager_id  => @ems.id,
           :association => :vms,
@@ -98,7 +106,7 @@ RSpec.describe EmsRefresh do
 
   context ".queue_refresh_task" do
     before do
-      _guid, _server, zone = EvmSpecHelper.create_guid_miq_server_zone
+      zone = EvmSpecHelper.local_miq_server.zone
       @ems  = FactoryBot.create(:ems_vmware, :zone => zone)
       @ems2 = FactoryBot.create(:ems_vmware, :zone => zone)
     end
@@ -138,27 +146,6 @@ RSpec.describe EmsRefresh do
       it "returns a task for each EMS" do
         task_ids = described_class.queue_refresh_task([vm1, vm2])
         expect(task_ids.length).to eq(2)
-      end
-    end
-
-    context "task name" do
-      let(:vm1) { FactoryBot.create(:vm_vmware, :ext_management_system => @ems) }
-      let(:vm2) { FactoryBot.create(:vm_vmware, :ext_management_system => @ems) }
-      it "uses targets' short classnames to compose task name" do
-        task_ids = described_class.queue_refresh_task([vm1, vm2])
-        task_name = MiqTask.find(task_ids.first).name
-        expect(task_name).to include([vm1.class.name.demodulize, vm1.id].to_s)
-        expect(task_name).to include([vm2.class.name.demodulize, vm1.id].to_s)
-      end
-    end
-
-    describe ".create_refresh_task" do
-      it "create refresh task and trancates task name to 255 symbols" do
-        vm = FactoryBot.create(:vm_vmware, :name => "vm_vmware1", :ext_management_system => @ems)
-        targets = Array.new(500) { [vm.class.name, vm.id] }
-        task_name = described_class.send(:create_refresh_task, @ems, targets).name
-        expect(task_name.include?(@ems.name)).to eq true
-        expect(task_name.length).to eq 255
       end
     end
   end

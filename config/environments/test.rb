@@ -15,7 +15,7 @@ Vmdb::Application.configure do
 
   # Configure static asset server for tests with Cache-Control for performance
   config.public_file_server.enabled = true
-  config.public_file_server.headers = { 'Cache-Control' => 'public, max-age=3600' }
+  config.public_file_server.headers = {'Cache-Control' => 'public, max-age=3600'}
 
   # Avoid potential warnings and race conditions
   config.assets.configure do |env|
@@ -31,11 +31,11 @@ Vmdb::Application.configure do
   config.consider_all_requests_local       = false
   config.action_controller.perform_caching = false
 
-  # Raise exceptions instead of rendering exception templates
-  config.action_dispatch.show_exceptions = true
+  # Render exception templates for rescuable exceptions and raise for other exceptions.
+  config.action_dispatch.show_exceptions = :rescuable
 
   # Disable request forgery protection in test environment
-  config.action_controller.allow_forgery_protection    = false
+  config.action_controller.allow_forgery_protection = false
 
   # Tell Action Mailer not to deliver emails to the real world.
   # The :test delivery method accumulates sent emails in the
@@ -49,8 +49,8 @@ Vmdb::Application.configure do
 
   # Any exception that gets past our ApplicationController's rescue_from
   # should just be raised intact
-  config.middleware.delete(::ActionDispatch::ShowExceptions)
-  config.middleware.delete(::ActionDispatch::DebugExceptions)
+  config.middleware.delete(ActionDispatch::ShowExceptions)
+  config.middleware.delete(ActionDispatch::DebugExceptions)
 
   # Customize any additional options below...
 
@@ -63,8 +63,8 @@ require "minitest"
 require "factory_bot"
 require "timecop"
 require "vcr"
+require "rspec"
 require "webmock/rspec"
-require "capybara"
 
 module AssumeAssetPrecompiledInTest
   def asset_precompiled?(_logical_path)

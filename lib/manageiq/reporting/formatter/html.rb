@@ -1,7 +1,7 @@
 module ManageIQ
   module Reporting
     module Formatter
-      class HTML < Ruport::Formatter
+      class Html < Ruport::Formatter
         renders :html, :for => ManageIQ::Reporting::Formatter::ReportRenderer
 
         def build_html_title
@@ -18,6 +18,7 @@ module ManageIQ
 
         def pad(str, len)
           return "".ljust(len) if str.nil?
+
           str = str.slice(0, len) # truncate long strings
           str.ljust(len) # pad with whitespace
         end

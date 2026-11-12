@@ -52,8 +52,8 @@ class TokenStore
     MiqMemcached.default_client_options.merge(
       {
         :namespace  => "MIQ:TOKENS:#{namespace.upcase}",
-        :threadsafe => true,
-        :expires_in => token_ttl
+        :expires_in => token_ttl,
+        :pool       => {:size => 10} # runs through ActiveSupport::Cache::MemCacheStore, it expects pool key with size/timeout key/values in 7.2
       }
     )
   end

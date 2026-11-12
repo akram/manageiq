@@ -24,15 +24,12 @@ task :release do
   lock_release = root.join("Gemfile.lock.release")
   if lock_release.exist?
     gemfile_lock = lock_release.to_s.chomp(".release")
-    appliance_dependency = root.join("bundler.d/manageiq-appliance-dependencies.rb")
 
     FileUtils.ln_s(lock_release, gemfile_lock, :force => true)
-    FileUtils.ln_s(root.join("../manageiq-appliance/manageiq-appliance-dependencies.rb"),
-                   appliance_dependency, :force => true)
 
     exit $?.exitstatus unless Bundler.unbundled_system({"BUNDLE_IGNORE_CONFIG" => "true", "APPLIANCE" => "true"}, "bundle lock --update --conservative --patch")
 
-    FileUtils.rm([appliance_dependency, gemfile_lock])
+    FileUtils.rm(gemfile_lock)
 
     lock_content = lock_release.read
     lock_release.write(lock_content.gsub("branch: #{branch}", "tag: #{version}"))
@@ -105,11 +102,6 @@ namespace :release do
     content = dockerfile.read
     dockerfile.write(content.sub(/^(ARG IMAGE_REF=).+/, "\\1latest-#{branch}"))
 
-    # Modify docker-assets README
-    docker_readme = root.join("docker-assets", "README.md")
-    content = docker_readme.read
-    docker_readme.write(content.sub(%r{(manageiq-pods/tree/)[^/]+(/)}, "\\1#{branch}\\2"))
-
     # Modify VERSION
     version_file = root.join("VERSION")
     version_file.write("#{branch}-pre")
@@ -125,7 +117,7 @@ namespace :release do
     deprecation.write(content.sub(/(ActiveSupport::Deprecation.new\(")[^"]+(")/, "\\1#{next_branch.capitalize}\\2"))
 
     # Commit
-    files_to_update = [gemfile, dockerfile, docker_readme, version_file, vmdb_appliance, deprecation]
+    files_to_update = [gemfile, dockerfile, version_file, vmdb_appliance, deprecation]
     exit $?.exitstatus unless system("git add #{files_to_update.join(" ")}")
     exit $?.exitstatus unless system("git commit -m 'Changes for new branch #{branch}'")
 
@@ -184,6 +176,8 @@ namespace :release do
     puts
   end
 
+  # usage:
+  #   RELEASE_BRANCH=morphy UPDATE_GEMS="json" be rake release:generate_lockfile
   desc "Generate the Gemfile.lock.release file"
   task :generate_lockfile do
     branch = ENV["RELEASE_BRANCH"]
@@ -199,28 +193,39 @@ namespace :release do
     # Ensure that local and global bundler.d is not enabled
     local_bundler_d  = root.join("bundler.d")
     global_bundler_d = Pathname.new(Dir.home).join(".bundler.d")
-    if (local_bundler_d.exist? && local_bundler_d.glob("*.rb").any?) ||
-       (global_bundler_d.exist? && global_bundler_d.glob("*.rb").any?)
+    bundler_inject_files = local_bundler_d.glob("*.rb") + global_bundler_d.glob("*.rb")
+
+    if bundler_inject_files.any?
       STDERR.puts "ERROR: You cannot run generate_lockfile with bundler-inject files present."
+      STDERR.puts "files found: #{bundler_inject_files.join(", ")}"
       exit 1
     end
 
     begin
-      require "open-uri"
-      appliance_deps = URI.parse("https://raw.githubusercontent.com/ManageIQ/manageiq-appliance/#{branch}/manageiq-appliance-dependencies.rb").read
-      appliance_deps_file = local_bundler_d.join("manageiq_appliance_dependencies.rb")
-      File.write(appliance_deps_file, appliance_deps)
-
-      FileUtils.cp(root.join("Gemfile.lock.release"), root.join("Gemfile.lock"))
+      if root.join("Gemfile.lock.release").exist?
+        FileUtils.cp(root.join("Gemfile.lock.release"), root.join("Gemfile.lock"))
+      else
+        # First time build of Gemfile.lock.release
+        update_gems = ["*"]
+        root.join("Gemfile.lock").delete
+      end
 
       if update_gems.any?
+        cmd =
+          if update_gems == ["*"]
+            "bundle update" # Update everything regardless of patch level
+          else
+            "bundle update --conservative --patch #{update_gems.join(" ")}"
+          end
+
         Bundler.with_unbundled_env do
           puts "** Updating gems #{update_gems.join(", ")}"
-          exit $?.exitstatus unless system({"APPLIANCE" => "true"}, "bundle update --conservative --patch #{update_gems.join(" ")}", :chdir => root)
+          exit $?.exitstatus unless system({"APPLIANCE" => "true"}, cmd, :chdir => root)
         end
       end
 
       platforms = %w[
+        arm64-darwin
         ruby
         x86_64-linux
         x86_64-darwin
@@ -235,8 +240,6 @@ namespace :release do
       end
 
       FileUtils.cp(root.join("Gemfile.lock"), root.join("Gemfile.lock.release"))
-    ensure
-      FileUtils.rm_f(appliance_deps_file)
     end
   end
 end

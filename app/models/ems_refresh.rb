@@ -34,7 +34,10 @@ module EmsRefresh
             t.manager
           end
 
-      h[e] << t unless e.nil?
+      next if e.nil?
+      next unless e.supports?(:refresh_ems) # Remove targets from any EMS that doesn't support refresh_ems
+
+      h[e] << t
     end
 
     # Queue the refreshes
@@ -43,7 +46,7 @@ module EmsRefresh
       queue_merge(ts, ems, opts[:create_task])
     end
 
-    return task_ids if opts[:create_task]
+    task_ids if opts[:create_task]
   end
 
   def self.refresh(target, id = nil)
@@ -84,7 +87,7 @@ module EmsRefresh
       target_class = target_class.to_s.constantize unless target_class.kind_of?(Class)
 
       if ManageIQ::Providers::Inventory.persister_class_for(target_class).blank? &&
-         [VmOrTemplate, Host, PhysicalServer, PhysicalStorage, CloudVolume, ExtManagementSystem, InventoryRefresh::Target].none? { |k| target_class <= k }
+         [VmOrTemplate, Host, PhysicalServer, PhysicalStorage, CloudVolume, ExtManagementSystem, StorageService, HostInitiatorGroup, HostInitiator, VolumeMapping, InventoryRefresh::Target].none? { |k| target_class <= k }
         _log.warn("Unknown target type: [#{target_class}].")
         next
       end
@@ -97,7 +100,7 @@ module EmsRefresh
       ids.uniq!
 
       recs = if target_class <= InventoryRefresh::Target
-               ids.map { |x| InventoryRefresh::Target.load(x) }
+               ids.map { |x| InventoryRefresh::Target.load(**x) }
              else
                active_record_recs = target_class.where(:id => ids)
                active_record_recs = active_record_recs.includes(:ext_management_system) unless target_class <= ExtManagementSystem
@@ -128,7 +131,7 @@ module EmsRefresh
 
     # Items will be naturally serialized since there is a dedicated worker.
     MiqQueue.put_or_update(queue_options) do |msg, item|
-      targets = msg.nil? ? targets : msg.data.concat(targets)
+      targets = msg.data.concat(targets) unless msg.nil?
       targets = uniq_targets(targets)
       obj = targets.select { |t| t.kind_of?(ApplicationRecord) }
       if obj.present?
@@ -164,10 +167,9 @@ module EmsRefresh
     task_id
   end
 
-  def self.create_refresh_task(ems, targets)
-    targets = targets.collect { |target_class, target_id| [target_class.demodulize, target_id] }
+  def self.create_refresh_task(ems, _targets)
     task_options = {
-      :action => "EmsRefresh(#{ems.name}) [#{targets}]".truncate(255),
+      :action => "EmsRefresh(#{ems.name}) Refreshing relationships and power states",
       :userid => "system"
     }
 
@@ -218,8 +220,10 @@ module EmsRefresh
 
       [:name, :product_name, :device_name].each do |k|
         next unless d.respond_to?(k)
+
         v = d.send(k)
         next if v.nil?
+
         s << " #{k}: [#{v}]"
         break
       end

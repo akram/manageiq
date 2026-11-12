@@ -18,24 +18,8 @@ module MiqWebServerWorkerMixin
       BINDING_ADDRESS
     end
 
-    def preload_for_console
-      configure_secret_token(SecureRandom.hex(64))
-    end
-
     def preload_for_worker_role
       raise "Expected database to be seeded via `rake db:seed`." unless EvmDatabase.seeded_primordially?
-      configure_secret_token
-    end
-
-    def configure_secret_token(token = MiqDatabase.first.session_secret_token)
-      return if Rails.application.config.secret_key_base
-
-      Rails.application.config.secret_key_base = token
-
-      # To set a secret token after the Rails.application is initialized,
-      # we need to reset the secrets since they are cached:
-      # https://github.com/rails/rails/blob/4-2-stable/railties/lib/rails/application.rb#L386-L401
-      Rails.application.secrets = nil
     end
 
     def rails_server
@@ -104,6 +88,7 @@ module MiqWebServerWorkerMixin
     def reserve_port(ports)
       free_ports = port_range.to_a - ports
       raise NoFreePortError if free_ports.empty?
+
       free_ports.first
     end
   end
@@ -152,7 +137,7 @@ module MiqWebServerWorkerMixin
   end
 
   def release_db_connection
-    self.update_spid!(nil)
+    update_spid!(nil)
     self.class.release_db_connection
   end
 end

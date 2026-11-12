@@ -22,10 +22,6 @@ class ActsAsArModel
     superclass == ActsAsArModel ? self : superclass.base_class
   end
 
-  def self.includes_to_references(_inc)
-    []
-  end
-
   class << self; alias_method :base_model, :base_class; end
 
   #
@@ -82,7 +78,7 @@ class ActsAsArModel
 
     def attributes=(values)
       values.each do |attr, value|
-        send("#{attr}=", value)
+        send(:"#{attr}=", value)
       end
     end
 
@@ -111,7 +107,7 @@ class ActsAsArModel
         read_attribute(attribute)
       end
 
-      define_method("#{attribute}=") do |val|
+      define_method(:"#{attribute}=") do |val|
         write_attribute(attribute, val)
       end
     end
@@ -233,7 +229,7 @@ class ActsAsArModel
     if value.kind_of?(String) && value.length > 50
       "#{value[0..50]}...".inspect
     elsif value.kind_of?(Date) || value.kind_of?(Time)
-      %("#{value.to_s(:db)}")
+      %("#{value.to_fs(:db)}")
     else
       value.inspect
     end

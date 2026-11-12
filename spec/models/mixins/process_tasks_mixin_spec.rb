@@ -40,7 +40,7 @@ RSpec.describe ProcessTasksMixin do
     end
 
     it "queues a message for the specified task" do
-      EvmSpecHelper.create_guid_miq_server_zone
+      EvmSpecHelper.local_miq_server
       test_class.process_tasks(:task => "test_method", :ids => [5], :userid => "admin")
 
       message = MiqQueue.first
@@ -54,7 +54,7 @@ RSpec.describe ProcessTasksMixin do
     end
 
     it "defaults the userid to system in the queue message" do
-      EvmSpecHelper.create_guid_miq_server_zone
+      EvmSpecHelper.local_miq_server
       test_class.process_tasks(:task => "test_method", :ids => [5])
 
       message = MiqQueue.first
@@ -257,12 +257,12 @@ RSpec.describe ProcessTasksMixin do
           expect(api_collection).to receive(:find).with(0).and_return(Struct.new(:id).new(0))
           expect(api_collection).to receive(:find).with(1).and_return(double("Something that responds", :id => 0, :the_task => nil))
 
-          expect($log).to receive(:error).with(a_string_including("undefined method `the_task' for #<struct id=0>")).and_call_original
+          expect($log).to receive(:error).with(a_string_including("undefined method `the_task' for")).and_call_original
           expect(test_class.invoke_api_tasks(api_connection, :ids => [0, 1], :task => "the_task")).to eq([0, 1])
         end
 
         it "collection" do
-          expect($log).to receive(:error).with(a_string_including("undefined method `the_task' for []:Array")).and_call_original
+          expect($log).to receive(:error).with(a_string_including("undefined method `the_task' for")).and_call_original
           expect { test_class.invoke_api_tasks(api_connection, :task => "the_task") }.not_to raise_error
         end
       end

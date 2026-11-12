@@ -3,8 +3,6 @@ class MiqTemplate < VmOrTemplate
 
   default_scope { where(:template => true) }
 
-  supports_not :kickstart_provisioning
-
   virtual_column :display_type,                         :type => :string
   virtual_column :display_operating_system,             :type => :string
   virtual_column :display_platform,                     :type => :string
@@ -12,7 +10,7 @@ class MiqTemplate < VmOrTemplate
   virtual_column :display_deprecated,                   :type => :string
   virtual_column :display_memory,                       :type => :integer
 
-  include_concern 'Operations'
+  include Operations
 
   def self.base_model
     MiqTemplate
@@ -31,7 +29,11 @@ class MiqTemplate < VmOrTemplate
   end
 
   def self.eligible_for_provisioning
-    supporting(:provisioning).active
+    where(:type => subclasses_supporting(:provisioning).map(&:name)).active
+  end
+
+  def self.filter_with_name(name)
+    where(arel_table[:name].matches("%#{name}%"))
   end
 
   def self.without_volume_templates
@@ -93,5 +95,9 @@ class MiqTemplate < VmOrTemplate
     else
       _("N/A")
     end
+  end
+
+  private_class_method def self.refresh_association
+    :miq_templates
   end
 end

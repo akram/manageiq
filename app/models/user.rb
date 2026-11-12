@@ -31,7 +31,7 @@ class User < ApplicationRecord
   has_and_belongs_to_many :miq_groups
   scope      :superadmins, lambda {
     joins(:miq_groups => {:miq_user_role => :miq_product_features})
-      .where(:miq_product_features => {:identifier => MiqProductFeature::SUPER_ADMIN_FEATURE })
+      .where(:miq_product_features => {:identifier => MiqProductFeature::SUPER_ADMIN_FEATURE})
   }
 
   virtual_has_many :active_vms, :class_name => "VmOrTemplate"
@@ -44,26 +44,38 @@ class User < ApplicationRecord
   validates :name, :presence => true, :length => {:maximum => 100}
   validates :first_name, :length => {:maximum => 100}
   validates :last_name, :length => {:maximum => 100}
-  validates :userid, :presence => true, :unique_within_region => {:match_case => false}
+  validates :userid, :presence => true, :unique_within_region => {:match_case => false}, :length => {:maximum => 255}
   validates :email, :format => {:with => MoreCoreExtensions::StringFormats::RE_EMAIL,
-                                :allow_nil => true, :message => "must be a valid email address"}
+                                :allow_nil => true, :message => "must be a valid email address"},
+                    :length => {:maximum => 255}
   validates :current_group, :inclusion => {:in => proc { |u| u.miq_groups }, :allow_nil => true, :if => :current_group_id_changed?}
+  validate  :password_complexity, :if => :password
 
   # use authenticate_bcrypt rather than .authenticate to avoid confusion
   # with the class method of the same name (User.authenticate)
   alias_method :authenticate_bcrypt, :authenticate
 
-  serialize     :settings, Hash   # Implement settings column as a hash
-  default_value_for(:settings) { Hash.new }
+  # Allows callers (e.g. seed) to bypass password complexity checks for a
+  # single save by setting this transient flag before saving.
+  attr_writer :skip_complexity_check
+
+  serialize     :settings, :type => Hash   # Implement settings column as a hash
+  default_value_for(:settings) { {} }
 
   default_value_for :failed_login_attempts, 0
 
-  scope :with_same_userid, ->(id) { where(:userid => User.where(:id => id).pluck(:userid)) }
+  scope :in_all_regions, ->(id) { where(:userid => User.default_scoped.where(:id => id).select(:userid)) }
 
-  def self.with_roles_excluding(identifier)
-    where.not(:id => User.unscope(:select).joins(:miq_groups => :miq_product_features)
-                             .where(:miq_product_features => {:identifier => identifier})
-                             .select(:id))
+  def self.with_roles_excluding(identifier, allowed_ids: nil)
+    scope = where.not(
+      :id => User
+        .unscope(:select)
+        .joins(:miq_groups => :miq_product_features)
+        .where(:miq_product_features => {:identifier => identifier})
+        .select(:id)
+    )
+    scope = scope.or(where(:id => allowed_ids)) if allowed_ids.present?
+    scope
   end
 
   def self.scope_by_tenant?
@@ -171,6 +183,7 @@ class User < ApplicationRecord
   def dummy_password_for_external_auth
     if password.blank? && password_digest.blank? &&
        !self.class.authenticator(userid).uses_stored_password?
+      self.skip_complexity_check = true
       self.password = "dummy"
     end
   end
@@ -183,7 +196,7 @@ class User < ApplicationRecord
     end
     if auth.authenticate(userid, oldpwd)
       self.password = newpwd
-      self.save!
+      save!
     end
   end
 
@@ -276,6 +289,7 @@ class User < ApplicationRecord
 
   def self.authorize_user(userid)
     return if userid.blank? || admin?(userid)
+
     authenticator(userid).authorize_user(userid)
   end
 
@@ -319,6 +333,7 @@ class User < ApplicationRecord
     user_groups = miq_group_ids
     user_groups.delete(current_group_id)
     raise _("The user's current group cannot be changed because the user does not belong to any other group") if user_groups.empty?
+
     self.current_group = MiqGroup.find_by(:id => user_groups.first)
     save!
   end
@@ -379,6 +394,7 @@ class User < ApplicationRecord
 
   def self.with_user_group(user, group, &block)
     return yield if user.nil?
+
     user = User.find(user) unless user.kind_of?(User)
     if group && group.kind_of?(MiqGroup)
       user.current_group = group
@@ -438,6 +454,7 @@ class User < ApplicationRecord
     seed_data.each do |user_attributes|
       user_id = user_attributes[:userid]
       next if in_my_region.find_by_userid(user_id)
+
       log_attrs = user_attributes.slice(:name, :userid, :group)
       _log.info("Creating user with parameters #{log_attrs.inspect}")
 
@@ -445,7 +462,7 @@ class User < ApplicationRecord
       group = MiqGroup.in_my_region.find_by(:description => group_description)
 
       _log.info("Creating #{user_id} user...")
-      user = create(user_attributes)
+      user = create(user_attributes.merge(:skip_complexity_check => true))
       user.miq_groups = [group] if group
       user.save
       _log.info("Creating #{user_id} user... Complete")
@@ -462,16 +479,35 @@ class User < ApplicationRecord
   end
   private_class_method :seed_data
 
+  MANAGEIQ_DICTIONARY_WORDS = %w[manageiq miq vmdb].freeze
+
   private
 
+  def password_complexity
+    return if @skip_complexity_check
+
+    rules = ::Settings.authentication.password_rules
+    return if rules.complexity_min_score == 0
+
+    require "zxcvbn"
+    tester = Zxcvbn.tester_builder
+                   .add_word_list("manageiq_terms", MANAGEIQ_DICTIONARY_WORDS)
+                   .add_word_list("extra_terms", Array(rules.complexity_extra_words))
+                   .build
+    result = tester.test(password)
+    return unless result.score < rules.complexity_min_score
+
+    details = [result.feedback.warning, *result.feedback.suggestions].compact_blank
+    errors.add(:base, [_("Password is not strong enough"), *details].join("\n"))
+  end
+
   def unlock_queue
-    MiqQueue.put_or_update(
+    MiqQueue.create_with(:deliver_on => Time.now.utc + ::Settings.authentication.locked_account_timeout.to_i)
+            .put_unless_exists(
       :class_name  => self.class.name,
       :instance_id => id,
       :method_name => 'unlock!',
       :priority    => MiqQueue::MAX_PRIORITY
-    ) do |_msg, queue_options|
-      queue_options.merge(:deliver_on => Time.now.utc + ::Settings.authentication.locked_account_timeout.to_i)
-    end
+    )
   end
 end

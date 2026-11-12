@@ -71,17 +71,61 @@ class Service < ApplicationRecord
   include ProcessTasksMixin
   include ServiceMixin
   include TenancyMixin
+  include ReconfigurationMixin
 
   extend InterRegionApiMethodRelay
 
-  include_concern 'Aggregation'
-  include_concern 'Operations'
-  include_concern 'ResourceLinking'
-  include_concern 'RetirementManagement'
+  include Aggregation
+  include Operations
+  include ResourceLinking
+  include RetirementManagement
 
   hide_attribute "display"
 
   virtual_total :v_total_vms, :vms, :arel => aggregate_hardware_arel("v_total_vms", vms_tbl[:id].count, :skip_hardware => true)
+  # Counts the direct (one-level-deep) service children of each service row using the
+  # ancestry gem's path convention.  A child's `ancestry` column equals the parent's
+  # full ancestry path: either just the parent's id (when the parent is a root) or
+  # "<grandparent_path>/<parent_id>" (when the parent itself has ancestors).
+  #
+  # Equivalent SQL (for a root service with id=1):
+  #
+  #   SELECT COALESCE(
+  #     (SELECT COUNT(*)
+  #      FROM   services AS direct_service_children_services
+  #      WHERE  direct_service_children_services.ancestry =
+  #             CASE WHEN services.ancestry IS NULL
+  #                  THEN CAST(services.id AS VARCHAR)
+  #                  ELSE services.ancestry || '/' || CAST(services.id AS VARCHAR)
+  #             END),
+  #     0)
+  virtual_total :v_total_direct_service_children, :direct_service_children,
+                :arel => lambda { |t|
+                  # Alias table used in the correlated subquery to avoid name collisions
+                  child_tbl = Arel::Table.new(:services, :as => "direct_service_children_services")
+
+                  # CAST(services.id AS VARCHAR) - ancestry stores ids as strings
+                  id_as_string = Arel::Nodes::NamedFunction.new("CAST", [t[:id].as("VARCHAR")])
+
+                  # Build the expected ancestry value for a direct child of the current row:
+                  #   root service   -> "<id>"
+                  #   nested service -> "<existing_ancestry>/<id>"
+                  expected_child_ancestry =
+                    Arel::Nodes::Case.new
+                                     .when(t[:ancestry].eq(nil))
+                                     .then(id_as_string)
+                                     .else(Arel::Nodes::Concat.new(
+                                             Arel::Nodes::Concat.new(t[:ancestry], Arel.sql("'/'")),
+                                             id_as_string
+                                           ))
+
+                  # Correlated subquery: COUNT(*) of children whose ancestry matches
+                  count_children = child_tbl.project(Arel.star.count)
+                                            .where(child_tbl[:ancestry].eq(expected_child_ancestry))
+
+                  # Wrap in COALESCE so rows with no children return 0 instead of NULL
+                  Arel::Nodes::NamedFunction.new("COALESCE", [t.grouping(count_children), Arel.sql("0")])
+                }
 
   virtual_column :has_parent,   :type => :boolean
   virtual_column :power_state,  :type => :string
@@ -94,22 +138,27 @@ class Service < ApplicationRecord
   default_value_for :lifecycle_state, 'unprovisioned'
   default_value_for :retired, false
 
-  validates :visible, :inclusion => { :in => [true, false] }
-  validates :retired, :inclusion => { :in => [true, false] }
+  validates :visible, :inclusion => {:in => [true, false]}
+  validates :retired, :inclusion => {:in => [true, false]}
 
   scope :displayed, ->              { where(:visible => true) }
   scope :retired,   ->(bool = true) { where(:retired => bool) }
 
-  supports :reconfigure do
-    unsupported_reason_add(:reconfigure, _("Reconfigure unsupported")) unless validate_reconfigure
-  end
-
+  supports(:reconfigure) { _("Reconfigure unsupported") unless validate_reconfigure }
   supports :retire
 
   alias parent_service parent
-  alias_attribute :service, :parent
-  deprecate_attribute :display, :visible
+
+  deprecate_attribute :display, :visible, :type => :boolean
   virtual_belongs_to :service
+
+  def service
+    parent
+  end
+
+  def service=(object)
+    self.parent = object
+  end
 
   def power_states
     vms.map(&:power_state)
@@ -132,12 +181,21 @@ class Service < ApplicationRecord
       'off' if power_states_match?(:stop)
     else
       return 'on' if power_states_match?(:start)
+
       'off' if power_states_match?(:stop)
     end
   end
 
   def power_status
     options[:power_status]
+  end
+
+  def self.active
+    where(:lifecycle_state => ["provisioning", "provisioned"], :retired => false)
+  end
+
+  def self.inactive
+    where(:lifecycle_state => ["unprovisioned", "error_in_provisioning"], :retired => false).or(retired)
   end
 
   def service_id
@@ -285,6 +343,7 @@ class Service < ApplicationRecord
   def update_power_status(action)
     expected_status = "#{action}_complete"
     return true if options[:power_status] == expected_status
+
     options[:power_status] = expected_status
     update(:options => options)
   end
@@ -347,8 +406,11 @@ class Service < ApplicationRecord
   end
 
   def validate_reconfigure
+    return false if retired? || retiring? || error_retiring?
+    return false if !(provisioned? || provision_failed?)
+
     ra = reconfigure_resource_action
-    ra && ra.dialog_id && ra.fqname.present?
+    ra&.dialog_id && (ra.fqname.present? || ra.configuration_script_payload.present?)
   end
 
   def reconfigure_resource_action
@@ -357,6 +419,7 @@ class Service < ApplicationRecord
 
   def reconfigure_dialog
     return nil unless supports?(:reconfigure)
+
     resource_action = reconfigure_resource_action
     options = {:target => self, :reconfigure => true}
 
@@ -429,13 +492,16 @@ class Service < ApplicationRecord
   end
 
   def chargeback_yaml
-    yaml = YAML.load_file(Rails.root.join('product', 'chargeback', 'chargeback_vm_monthly.yaml'))
+    yaml = YAML.load_file(Rails.root.join("product/chargeback/chargeback_vm_monthly.yaml"))
     yaml["db_options"][:options][:service_id] = id
     yaml["title"] = chargeback_report_name
     yaml
   end
 
   def queue_chargeback_report_generation(options = {})
+    # Only queue chargeback report generation if the reporting role is enabled for any server in the region.
+    raise MiqException::Error, _("Reporting role not enabled") unless MiqRegion.my_region.role_assigned?("reporting")
+
     msg = "Generating chargeback report for `#{self.class.name}` with id #{id}"
     task = MiqTask.create(
       :name    => msg,

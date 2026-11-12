@@ -32,9 +32,7 @@ class ManageIQ::Providers::EmsRefreshWorkflow < Job
   end
 
   def refresh
-    target = target_entity
-
-    task_ids = EmsRefresh.queue_refresh_task(target)
+    task_ids = EmsRefresh.queue_refresh_task(refresh_target)
     if task_ids.blank?
       process_error("Failed to queue refresh", "error")
       queue_signal(:error)
@@ -59,6 +57,10 @@ class ManageIQ::Providers::EmsRefreshWorkflow < Job
     priority = options[:priority] || MiqQueue::NORMAL_PRIORITY
 
     super(*args, :role => role, :priority => priority, :deliver_on => deliver_on)
+  end
+
+  def current_job_timeout(_timeout_adjustment = 1)
+    options[:timeout] || super
   end
 
   alias_method :initializing, :dispatch_start
@@ -99,5 +101,9 @@ class ManageIQ::Providers::EmsRefreshWorkflow < Job
     end
 
     true
+  end
+
+  def refresh_target
+    target_entity
   end
 end

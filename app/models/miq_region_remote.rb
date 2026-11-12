@@ -12,6 +12,7 @@ class MiqRegionRemote < ApplicationRecord
     log_details = "Host: [#{host}]}, Database: [#{database}], Adapter: [#{adapter}], User: [#{username}]"
 
     return [_("Validation failed due to missing port")] if port.blank?
+
     begin
       with_remote_connection(host, port, username, password, database, adapter) do |c|
         _log.info("Attempting to connection to: #{log_details}...")
@@ -35,7 +36,7 @@ class MiqRegionRemote < ApplicationRecord
       end
     rescue => err
       _log.warn("Attempting to connection to: #{log_details}...Failed with error: '#{err.message}")
-      return [_("Validation failed with error: '%{error_message}") % {:error_message => err.message}]
+      [_("Validation failed with error: '%{error_message}") % {:error_message => err.message}]
     end
   end
 
@@ -65,9 +66,9 @@ class MiqRegionRemote < ApplicationRecord
 
   def self.prepare_default_fields(database, adapter)
     if database.nil? || adapter.nil?
-      db_conf = ActiveRecord::Base.configurations[Rails.env]
-      database ||= db_conf["database"]
-      adapter  ||= db_conf["adapter"]
+      db_conf = ActiveRecord::Base.configurations.configs_for(:env_name => Rails.env).first.configuration_hash
+      database ||= db_conf[:database]
+      adapter  ||= db_conf[:adapter]
     end
     return database, adapter
   end
@@ -78,13 +79,15 @@ class MiqRegionRemote < ApplicationRecord
     return host, port, username, password, database, adapter
   end
 
-  def self.with_remote_connection(host, port, username, password, database, adapter, connect_timeout = 0)
+  def self.with_remote_connection(host, port, username, password, database, adapter, connect_timeout = 0, &block)
     # Don't allow accidental connections to localhost.  A blank host will
     # connect to localhost, so don't allow that at all.
     host = host.to_s.strip
     raise ArgumentError, _("host cannot be blank") if host.blank?
+
     if [nil, "", "localhost", "localhost.localdomain", "127.0.0.1", "0.0.0.0"].include?(host)
-      local_database = (ActiveRecord::Base.configurations[Rails.env] || {})["database"].to_s.strip
+      cfg = ActiveRecord::Base.configurations.configs_for(:env_name => Rails.env)&.first
+      local_database = cfg && cfg.database.to_s.strip
       if database == local_database
         raise ArgumentError, _("host cannot be set to localhost if database matches the local database")
       end
@@ -100,8 +103,7 @@ class MiqRegionRemote < ApplicationRecord
         :database        => database,
         :connect_timeout => connect_timeout
       }.delete_blanks)
-      conn = pool.connection
-      yield conn
+      pool.with_connection { |conn| block.call(conn) }
     ensure
       remove_connection
     end

@@ -34,8 +34,8 @@ module FixAuth
     end
 
     def models
-      [FixAuthentication, FixMiqDatabase, FixMiqAeValue, FixMiqAeField,
-       FixSettingsChange, FixMiqRequest, FixMiqRequestTask]
+      [FixAuthentication, FixConfigurationScript, FixMiqDatabase, FixMiqAeValue,
+       FixMiqAeField, FixSettingsChange, FixMiqRequest, FixMiqRequestTask]
     end
 
     def generate_password
@@ -51,7 +51,7 @@ module FixAuth
     end
 
     def print_dry_run_warning
-      method = caller_locations.first.label
+      method = caller_locations(1..1).first.label
       # Move this message up to `run` if the other methods add dry-run support
       puts "** #{method} is executing in dry-run mode, and no actual changes will be made **" if options[:dry_run]
     end
@@ -61,12 +61,15 @@ module FixAuth
 
       begin
         # in specs, this is already setup
-        ActiveRecord::Base.connection_config
+        ActiveRecord::Base.connection_db_config
       rescue ActiveRecord::ConnectionNotEstablished
         # From the command line, we want to connect to a database
         ActiveRecord::Base.logger = Logger.new("#{options[:root]}/log/fix_auth.log")
         ActiveRecord::Base.establish_connection(db_attributes(database))
       end
+
+      puts "processing database: #{options[:database]}"
+
       models.each do |model|
         model.run(run_options)
       end
@@ -79,7 +82,7 @@ module FixAuth
     end
 
     def load_rails
-      require File.expand_path("../../../config/application.rb", __FILE__)
+      require File.expand_path('../../config/application.rb', __dir__)
     end
 
     def set_passwords

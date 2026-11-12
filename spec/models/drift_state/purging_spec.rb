@@ -13,21 +13,21 @@ RSpec.describe DriftState do
       stub_settings(@vmdb_config)
 
       @rr1 = [
-        FactoryBot.create(:drift_state, :resource_type => 'VmOrTemplate', :resource_id => 1, :timestamp => (6.months + 1.days).to_i.seconds.ago.utc),
-        FactoryBot.create(:drift_state, :resource_type => 'VmOrTemplate', :resource_id => 1, :timestamp => (6.months - 1.days).to_i.seconds.ago.utc)
+        FactoryBot.create(:drift_state, :resource_type => 'VmOrTemplate', :resource_id => 1, :timestamp => (6.months + 1.day).to_i.seconds.ago.utc),
+        FactoryBot.create(:drift_state, :resource_type => 'VmOrTemplate', :resource_id => 1, :timestamp => (6.months - 1.day).to_i.seconds.ago.utc)
       ]
       @rr2 = [
         FactoryBot.create(:drift_state, :resource_type => 'VmOrTemplate', :resource_id => 2, :timestamp => (6.months + 2.days).to_i.seconds.ago.utc),
-        FactoryBot.create(:drift_state, :resource_type => 'VmOrTemplate', :resource_id => 2, :timestamp => (6.months + 1.days).to_i.seconds.ago.utc),
-        FactoryBot.create(:drift_state, :resource_type => 'VmOrTemplate', :resource_id => 2, :timestamp => (6.months - 1.days).to_i.seconds.ago.utc)
+        FactoryBot.create(:drift_state, :resource_type => 'VmOrTemplate', :resource_id => 2, :timestamp => (6.months + 1.day).to_i.seconds.ago.utc),
+        FactoryBot.create(:drift_state, :resource_type => 'VmOrTemplate', :resource_id => 2, :timestamp => (6.months - 1.day).to_i.seconds.ago.utc)
       ]
       @rr_orphaned = [
-        FactoryBot.create(:drift_state, :resource_type => 'VmOrTemplate', :resource_id => nil, :timestamp => (6.months - 1.days).to_i.seconds.ago.utc)
+        FactoryBot.create(:drift_state, :resource_type => 'VmOrTemplate', :resource_id => nil, :timestamp => (6.months - 1.day).to_i.seconds.ago.utc)
       ]
     end
 
     it "#purge_timer" do
-      EvmSpecHelper.create_guid_miq_server_zone
+      EvmSpecHelper.local_miq_server
 
       Timecop.freeze(Time.now) do
         described_class.purge_timer
@@ -44,7 +44,7 @@ RSpec.describe DriftState do
 
     context "#purge_queue" do
       before do
-        EvmSpecHelper.create_guid_miq_server_zone
+        EvmSpecHelper.local_miq_server
         described_class.purge_queue(:remaining, 1)
       end
 

@@ -36,7 +36,7 @@ class ResourceActionWorkflow < MiqRequestWorkflow
 
   def process_request(state)
     result = {:errors => validate_dialog}
-    return result unless result[:errors].blank?
+    return result if result[:errors].present?
 
     values = create_values
     if create_request?(values)
@@ -44,9 +44,9 @@ class ResourceActionWorkflow < MiqRequestWorkflow
     else
       ra = load_resource_action(values)
       if ra.resource.try(:open_url?)
-        result[:task_id] = ra.deliver_to_automate_from_dialog_with_miq_task(values, @target, @requester)
+        result[:task_id] = ra.deliver_task(values, @target, @requester)
       else
-        ra.deliver_to_automate_from_dialog(values, @target, @requester)
+        ra.deliver_queue(values, @target, @requester)
       end
     end
 
@@ -64,7 +64,7 @@ class ResourceActionWorkflow < MiqRequestWorkflow
   def create_values
     create_values_hash.tap do |value|
       value[:src_id] = @target.id
-      value[:request_options] = request_options unless request_options.blank?
+      value[:request_options] = request_options if request_options.present?
     end
   end
 
@@ -94,7 +94,7 @@ class ResourceActionWorkflow < MiqRequestWorkflow
   end
 
   def init_field_hash
-    @dialog.dialog_fields.each_with_object({}) { |df, result| result[df.name] = df }
+    @dialog.dialog_fields.index_by { |df| df.name }
   end
 
   def set_value(name, value)

@@ -1,6 +1,6 @@
 class MiqReportResult < ApplicationRecord
-  include_concern 'Purging'
-  include_concern 'ResultSetOperations'
+  include Purging
+  include ResultSetOperations
 
   belongs_to :miq_report
   belongs_to :miq_group
@@ -12,7 +12,7 @@ class MiqReportResult < ApplicationRecord
 
   serialize :report
 
-  virtual_delegate :description, :to => :miq_group, :prefix => true, :allow_nil => true, :type => :string
+  virtual_attribute :miq_group_description, :string, :through => :miq_group, :source => :description
   virtual_attribute :status, :string
   virtual_column :status_message,        :type => :string, :uses => :miq_task
   virtual_has_one :result_set,           :class_name => "Hash"
@@ -181,9 +181,11 @@ class MiqReportResult < ApplicationRecord
   #########################################################################################################
   def self.parse_userid(userid)
     return userid unless userid.to_s.include?("|")
+
     parts = userid.to_s.split("|")
-    return parts[0] if (parts.last == 'adhoc')
-    return parts[1] if (parts.last == 'schedule')
+    return parts[0] if parts.last == 'adhoc'
+    return parts[1] if parts.last == 'schedule'
+
     raise _("Cannot parse userid %{user_id}") % {:user_id => userid.inspect}
   end
 
@@ -205,7 +207,7 @@ class MiqReportResult < ApplicationRecord
   def to_pdf
     # Create the pdf header section
     html_string = generate_pdf_header(
-      :title     => name.gsub(/'/, '\\\\\&'), # Escape single quotes
+      :title     => name.gsub("'", "\\\\'"), # Escape single quotes
       :page_size => report.page_size,
       :run_date  => format_timezone(last_run_on, user_timezone, "gtl")
     )
@@ -346,15 +348,6 @@ class MiqReportResult < ApplicationRecord
     result_type.to_sym == :html ? html_rows : report_results
   end
 
-  def self.counts_by_userid
-    where("userid NOT LIKE 'widget%'").select("userid, COUNT(id) as count").group("userid")
-      .collect { |rr| {:userid => rr.userid, :count => rr.count.to_i} }
-  end
-
-  def self.orphaned_counts_by_userid
-    counts_by_userid.reject { |h| User.exists?(:userid => h[:userid]) }
-  end
-
   def self.delete_by_userid(userids)
     userids = Array.wrap(userids.presence)
     _log.info("Queuing deletion of report results for the following user ids: #{userids.inspect}")
@@ -362,7 +355,7 @@ class MiqReportResult < ApplicationRecord
       :class_name  => name,
       :method_name => "destroy_all",
       :priority    => MiqQueue::HIGH_PRIORITY,
-      :args        => [["userid IN (?)", userids]],
+      :args        => [["userid IN (?)", userids]]
     )
   end
 

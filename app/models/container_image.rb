@@ -11,8 +11,7 @@ class ContainerImage < ApplicationRecord
   include NewWithTypeStiMixin
   include CustomActionsMixin
   include Metric::CiMixin
-
-  include_concern 'Purging'
+  include Purging
 
   DOCKER_IMAGE_PREFIX = "docker://"
   DOCKER_PULLABLE_PREFIX = "docker-pullable://".freeze
@@ -29,16 +28,22 @@ class ContainerImage < ApplicationRecord
   has_one :operating_system, :through => :computer_system
   has_one :openscap_result, :dependent => :destroy
   has_many :openscap_rule_results, :through => :openscap_result
-  has_many :labels, -> { where(:section => "labels") }, :class_name => "CustomAttribute", :as => :resource, :dependent => :destroy
-  has_many :docker_labels, -> { where(:section => "docker_labels") }, :class_name => "CustomAttribute", :as => :resource, :dependent => :destroy
+  has_many :labels, -> { where(:section => "labels") }, # rubocop:disable Rails/HasManyOrHasOneDependent
+           :class_name => "CustomAttribute",
+           :as         => :resource,
+           :inverse_of => :resource
+  has_many :docker_labels, -> { where(:section => "docker_labels") }, # rubocop:disable Rails/HasManyOrHasOneDependent
+           :class_name => "CustomAttribute",
+           :as         => :resource,
+           :inverse_of => :resource
   has_one :last_scan_result, :class_name => "ScanResult", :as => :resource, :dependent => :destroy, :autosave => true
 
-  has_many :metric_rollups, :as => :resource, :dependent => :nullify, :inverse_of => :resource
-  has_many :metrics, :as => :resource, :dependent => :nullify, :inverse_of => :resource
-  has_many :vim_performance_states, :as => :resource, :dependent => :nullify, :inverse_of => :resource
+  has_many :metric_rollups, :as => :resource, :inverse_of => :resource         # Destroy will be handled by purger
+  has_many :metrics, :as => :resource, :inverse_of => :resource                # Destroy will be handled by purger
+  has_many :vim_performance_states, :as => :resource, :inverse_of => :resource # Destroy will be handled by purger
 
-  serialize :exposed_ports, Hash
-  serialize :environment_variables, Hash
+  serialize :exposed_ports, :type => Hash
+  serialize :environment_variables, :type => Hash
 
   virtual_column :display_registry, :type => :string
   virtual_total :total_containers, :containers
@@ -55,6 +60,7 @@ class ContainerImage < ApplicationRecord
 
   def full_name
     return docker_id if image_ref && image_ref.start_with?(DOCKER_PULLABLE_PREFIX)
+
     result = ""
     result << "#{container_image_registry.full_name}/" unless container_image_registry.nil?
     result << name
@@ -110,6 +116,7 @@ class ContainerImage < ApplicationRecord
 
   def disconnect_inv
     return if archived?
+
     _log.info("Disconnecting Image [#{name}] id [#{id}] from EMS [#{ext_management_system.name}] id [#{ext_management_system.id}]")
     self.container_image_registry = nil
     self.deleted_on = Time.now.utc
